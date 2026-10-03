@@ -231,12 +231,94 @@
     }
   }
 
+  // Facebook opens its dialog with window.open. When a blocker stops that, the
+  // SDK never calls back and the page simply sits there, so keep the handle if
+  // we ever get one (it also lets a second click re-focus the dialog) and treat
+  // a refused window as a failure the user can act on.
+  function watchPopups(onOpened, onBlocked) {
+    var original = window.open;
+    window.open = function () {
+      var opened = null;
+      try {
+        opened = original.apply(window, arguments);
+      } catch (err) {
+        opened = null;
+      }
+      if (opened) {
+        onOpened(opened);
+      } else {
+        onBlocked();
+      }
+      return opened;
+    };
+    setTimeout(function () {
+      window.open = original;
+    }, POPUP_WATCH_MS);
+  }
+
+  var POPUP_WATCH_MS = 10000;
+
+  // Facebook can take a while when it asks the user to pick a business, but a
+  // dialog that never answers at all is a blocked popup, so this is a backstop
+  // rather than a timeout on the user.
+  var DIALOG_TIMEOUT_MS = 45000;
+
+  var signupPopup = null;
+  var dialogPending = false;
+
   function openDialog(button) {
     var state = stateValue;
+    var settled = false;
+    var watchdog = null;
+
+    dialogPending = true;
     button.textContent = "Opening Facebook…";
+    clearSignupError();
+
+    // The state is single use, so a stalled or failed attempt must not leave it
+    // behind for the next click to reuse.
+    function abandon(message) {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      dialogPending = false;
+      signupPopup = null;
+      if (watchdog) {
+        clearTimeout(watchdog);
+      }
+      statePromise = null;
+      stateValue = "";
+      showSignupError(button, message);
+    }
+
+    watchPopups(
+      function (handle) {
+        signupPopup = handle;
+      },
+      function () {
+        abandon(
+          "Your browser blocked the Facebook sign-up window. Allow popups for this site " +
+            "(the icon on the left of the address bar) and try again."
+        );
+      }
+    );
+
+    watchdog = setTimeout(function () {
+      abandon(
+        "Facebook did not finish the sign-up. If no window opened at all, your browser is " +
+          "blocking popups for this site — allow them and try again."
+      );
+    }, DIALOG_TIMEOUT_MS);
+
 
     try {
       window.FB.login(function (authResponse) {
+        settled = true;
+        dialogPending = false;
+        if (watchdog) {
+          clearTimeout(watchdog);
+        }
         if (!authResponse || authResponse.status !== "connected") {
           var reason =
             authResponse && authResponse.error_message
@@ -277,8 +359,7 @@
         state: state,
       });
     } catch (err) {
-      showSignupError(
-        button,
+      abandon(
         "The Facebook dialog could not be opened (" +
           (err && err.message ? err.message : "unknown error") +
           "). Allow popups for this site and try again."
@@ -311,7 +392,14 @@
       return;
     }
 
-    button.disabled = true;
+    // A dialog we already opened is somewhere else on the screen, quite
+    // possibly behind this tab, so a second click brings it back instead of
+    // starting a competing flow.
+    if (dialogPending && signupPopup && !signupPopup.closed) {
+      signupPopup.focus();
+      return;
+    }
+
     openDialog(button);
   }
 
