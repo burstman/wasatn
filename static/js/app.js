@@ -52,6 +52,13 @@
 
   // --- Embedded Signup -----------------------------------------------------
 
+  // SDK_TIMEOUT_MS bounds how long the Facebook script may take. Without a
+  // bound a blocked or hung script leaves the promise pending forever, the
+  // button disabled and the user staring at a dead page.
+  var SDK_TIMEOUT_MS = 12000;
+  var statePromise = null;
+  var stateValue = "";
+
   function showSignupError(button, message) {
     var box = document.getElementById("signup-error");
     var text = document.getElementById("signup-error-message");
@@ -72,38 +79,89 @@
     }
   }
 
-  // loadSdk resolves once window.FB is initialised. A second call reuses the
-  // first promise so repeated clicks do not inject the script twice.
+  // loadSdk resolves with window.FB once the SDK is initialised.
+  //
+  // A failed attempt clears sdkPromise so a retry injects the script again
+  // rather than reusing a rejected promise forever.
   function loadSdk(version) {
     if (sdkPromise) {
       return sdkPromise;
     }
     sdkPromise = new Promise(function (resolve, reject) {
-      if (window.FB) {
-        window.FB.init({ xfbml: false, version: version });
+      var script = null;
+      var timer = null;
+      var settled = false;
+
+      function cleanup() {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        if (script) {
+          script.onload = null;
+          script.onerror = null;
+        }
+        delete window.fbAsyncInit;
+      }
+
+      function fail(message) {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        sdkPromise = null;
+        cleanup();
+        reject(new Error(message));
+      }
+
+      function init() {
+        try {
+          window.FB.init({ xfbml: false, version: version });
+        } catch (err) {
+          fail(
+            "Facebook's sign-up did not start (" +
+              (err && err.message ? err.message : "unknown error") +
+              "). Reload the page and try again."
+          );
+          return;
+        }
+        if (settled || !window.FB) {
+          return;
+        }
+        settled = true;
+        cleanup();
         resolve(window.FB);
+      }
+
+      if (window.FB) {
+        init();
         return;
       }
-      window.fbAsyncInit = function () {
-        window.FB.init({ xfbml: false, version: version });
-        resolve(window.FB);
-      };
-      var script = document.createElement("script");
+
+      timer = setTimeout(function () {
+        fail("Facebook's sign-up took too long to load. Check your connection and try again.");
+      }, SDK_TIMEOUT_MS);
+
+      window.fbAsyncInit = init;
+
+      script = document.createElement("script");
       script.src = SDK_SRC;
       script.async = true;
       script.crossOrigin = "anonymous";
       script.onerror = function () {
-        sdkPromise = null;
-        reject(new Error("Could not load Facebook's login script."));
+        fail(
+          "Facebook's login script was blocked and could not be loaded. " +
+            "An ad blocker, privacy extension or network filter is the usual cause: " +
+            "allowlist connect.facebook.net, or try a private window with extensions off."
+        );
       };
       document.head.appendChild(script);
     });
     return sdkPromise;
   }
 
-  // requestState asks our own server for the state value that proves this signup
-  // round trip. It is fetched per attempt rather than cached, because the server
-  // stores it in the session and clears it on use.
+  // requestState asks our own server for the state value that proves the signup
+  // round trip came back from Meta. It is fetched per attempt rather than cached
+  // forever, because the server clears it once it is used.
   function requestState(button) {
     return fetch(button.dataset.stateUrl, {
       method: "POST",
@@ -148,58 +206,117 @@
     });
   }
 
-  function startSignup(button) {
-    button.disabled = true;
+  // warmUp fetches everything the click needs: the state value and the SDK.
+  //
+  // This has to happen *before* the click, not during it. FB.login opens the
+  // Facebook dialog in a popup window, and browsers only permit that while the
+  // user gesture is still active. Awaiting a fetch first loses the gesture, and
+  // Firefox then blocks the popup without saying anything at all.
+  function warmUp(button) {
+    if (!statePromise) {
+      statePromise = requestState(button)
+        .then(function (state) {
+          stateValue = state;
+          return state;
+        })
+        .catch(function (err) {
+          statePromise = null;
+          throw err;
+        });
+      // The preload is an optimisation; a failure is reported on the next click.
+      statePromise.catch(function () {});
+    }
+    if (!sdkPromise) {
+      loadSdk(button.dataset.version).catch(function () {});
+    }
+  }
+
+  function openDialog(button) {
+    var state = stateValue;
     button.textContent = "Opening Facebook…";
+
+    try {
+      window.FB.login(function (authResponse) {
+        if (!authResponse || authResponse.status !== "connected") {
+          var reason =
+            authResponse && authResponse.error_message
+              ? authResponse.error_message
+              : "The sign-up was cancelled.";
+          showSignupError(button, reason);
+          return;
+        }
+        if (!authResponse.code) {
+          showSignupError(
+            button,
+            "Facebook did not return an authorization code. Check that your app allows response_type=code."
+          );
+          return;
+        }
+        button.textContent = "Connecting…";
+        postCode(button, authResponse.code, state)
+          .then(function (response) {
+            if (!response.ok) {
+              return describeFailure(response).then(function (message) {
+                showSignupError(button, message);
+              });
+            }
+            // The server stored the connection and set a flash message, so a
+            // reload is enough to show the result.
+            window.location.reload();
+          })
+          .catch(function () {
+            showSignupError(button, "Could not reach WasaTN. Check your connection and try again.");
+          });
+      }, {
+        // config_id selects the Embedded Signup configuration and
+        // response_type=code returns an authorization code instead of a cookie.
+        // No scope is requested: the pages_* scopes were deprecated by Graph v19
+        // and a new app cannot obtain them without App Review.
+        config_id: button.dataset.configId,
+        response_type: "code",
+        state: state,
+      });
+    } catch (err) {
+      showSignupError(
+        button,
+        "The Facebook dialog could not be opened (" +
+          (err && err.message ? err.message : "unknown error") +
+          "). Allow popups for this site and try again."
+      );
+    }
+  }
+
+  function startSignup(button) {
+    if (button.disabled) {
+      return;
+    }
     clearSignupError();
 
-    requestState(button)
-      .then(function (state) {
-        return loadSdk(button.dataset.version).then(function (fb) {
-          fb.login(function (authResponse) {
-            if (!authResponse || authResponse.status !== "connected") {
-              var reason =
-                authResponse && authResponse.error_message
-                  ? authResponse.error_message
-                  : "The sign-up was cancelled.";
-              showSignupError(button, reason);
-              return;
-            }
-            if (!authResponse.code) {
-              showSignupError(
-                button,
-                "Facebook did not return an authorization code. Check that your app allows response_type=code."
-              );
-              return;
-            }
-            button.textContent = "Connecting…";
-            postCode(button, authResponse.code, state)
-              .then(function (response) {
-                if (!response.ok) {
-                  return describeFailure(response).then(function (message) {
-                    showSignupError(button, message);
-                  });
-                }
-                // The server stored the connection and set a flash message, so a
-                // reload is enough to show the result.
-                window.location.reload();
-              })
-              .catch(function () {
-                showSignupError(button, "Could not reach WasaTN. Check your connection and try again.");
-              });
-          }, {
-            // config_id selects the Embedded Signup configuration; response_type
-            // code is what returns an authorization code instead of a cookie.
-            config_id: button.dataset.configId,
-            response_type: "code",
-            scope: "pages_show_list,pages_read_engagement",
-            state: state,
-          });
+    // Everything must already be resolved: FB.login has to run inside the click
+    // itself so the popup counts as user-initiated.
+    if (!window.FB || !stateValue) {
+      warmUp(button);
+      button.disabled = true;
+      button.textContent = "Loading Facebook…";
+      Promise.all([loadSdk(button.dataset.version), requestState(button)])
+        .then(function (results) {
+          stateValue = results[1];
+          button.disabled = false;
+          button.textContent = "Connect WhatsApp";
+          showSignupError(button, "Facebook is ready now. Click Connect WhatsApp again.");
+        })
+        .catch(function (err) {
+          showSignupError(button, err.message || "Could not start the sign-up.");
         });
-      })
-      .catch(function (err) {
-        showSignupError(button, err.message || "Could not start the sign-up.");
-      });
+      return;
+    }
+
+    button.disabled = true;
+    openDialog(button);
+  }
+
+  function findConnectButton() {
+    return document.getElementById("connect-whatsapp");
   }
 
   document.addEventListener("click", function (event) {
@@ -208,8 +325,25 @@
       return;
     }
     event.preventDefault();
-    if (!button.disabled) {
-      startSignup(button);
-    }
+    startSignup(button);
   });
+
+  // Warm up as soon as the button exists, and again on the first sign the user
+  // shows of interest, so the click is almost always the only thing left.
+  function prepare() {
+    var button = findConnectButton();
+    if (!button) {
+      return;
+    }
+    warmUp(button);
+    button.addEventListener("pointerenter", function () {
+      warmUp(button);
+    });
+    button.addEventListener("focus", function () {
+      warmUp(button);
+    });
+  }
+
+  prepare();
+  document.addEventListener("htmx:afterSwap", prepare);
 })();
