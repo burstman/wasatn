@@ -230,8 +230,12 @@ Steps:
 4. Deploy, then check `curl https://<your-url>/healthz`. It must return
    `{"status":"ok","database":"up"}`.
 
-`PUBLIC_BASE_URL` is filled in from the service host, so cookies and redirects
-work without editing it by hand.
+`PUBLIC_BASE_URL` is filled in from the service's `hostedDomainName`, so cookies
+and redirects work without editing it by hand. Do not switch it to the `host`
+property: that yields only the short service name (`wasatn`), which would make
+the signup redirect URI `https://wasatn/connections`. The app refuses to start in
+production when `PUBLIC_BASE_URL` has no dot in its host, precisely so that
+mistake cannot ship silently.
 
 | Variable | Required | Notes |
 | --- | --- | --- |
@@ -241,7 +245,7 @@ work without editing it by hand.
 | `CRON_SECRET` | yes | `openssl rand -hex 32`. Guards the internal scheduler endpoint. |
 | `SUPERKIT_ENV` | blueprint | `production` turns on https and secure cookies. |
 | `TRUST_PROXY` | blueprint | Must be `true`: Render terminates TLS and sets `X-Forwarded-Proto` and `X-Forwarded-For`. |
-| `PUBLIC_BASE_URL` | blueprint | Derived from the service host; a bare hostname is upgraded to https. |
+| `PUBLIC_BASE_URL` | blueprint | Derived from `hostedDomainName`; a bare hostname is upgraded to https. Production rejects a host with no dot in it. |
 | `PORT` | Render | Injected by the platform and bound when `HTTP_ADDR` is unset. |
 | `META_APP_ID`, `META_APP_SECRET`, `META_VERIFY_TOKEN` | no | Without them the app boots and logs a warning, webhooks reject every delivery, and the connections page shows a setup notice. |
 | `META_FB_CONFIG_ID` | no | Embedded Signup configuration id. Public, not a secret, but without it the Connect button is never rendered. |

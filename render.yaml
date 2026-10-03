@@ -28,11 +28,15 @@ services:
         value: production
       - key: TRUST_PROXY
         value: "true" # Render terminates TLS and sets X-Forwarded-Proto
+      # hostedDomainName, not host: `host` yields only the short service name
+      # ("wasatn"), which produces https://wasatn and an OAuth redirect URI that
+      # matches nothing registered in Meta. The app rejects a single-label host
+      # at startup so this cannot fail quietly again.
       - key: PUBLIC_BASE_URL
         fromService:
           type: web
           name: wasatn
-          property: host
+          property: hostedDomainName
       - key: SESSION_COOKIE_NAME
         value: wasatn_session
       - key: META_GRAPH_VERSION

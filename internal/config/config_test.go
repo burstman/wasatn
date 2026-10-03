@@ -229,6 +229,67 @@ func TestValidateForProduction(t *testing.T) {
 
 // Meta credentials gate the connections page, not startup: an incomplete Meta
 // config must not stop the app from serving auth.
+// A platform that hands out a short service name instead of a domain produces a
+// PUBLIC_BASE_URL that boots fine and then fails as an OAuth redirect Meta does
+// not recognise, so it is rejected outright.
+func TestValidateForProductionRejectsASingleLabelHost(t *testing.T) {
+	tests := []struct {
+		name string
+		base string
+	}{
+		{name: "short service name", base: "https://wasatn"},
+		{name: "short service name with a port", base: "https://wasatn:443"},
+		{name: "single label and a path", base: "https://wasatn/connections"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{Env: EnvProduction, PublicBaseURL: tc.base, CronSecret: "c"}
+			err := cfg.ValidateForProduction()
+			if err == nil {
+				t.Fatalf("ValidateForProduction() accepted %q", tc.base)
+			}
+			if !strings.Contains(err.Error(), "public domain") {
+				t.Errorf("error = %v, want it to name the problem", err)
+			}
+		})
+	}
+}
+
+func TestValidateForProductionAcceptsAPublicHost(t *testing.T) {
+	for _, base := range []string{
+		"https://wasatn.onrender.com",
+		"https://app.example.com",
+		// Production mode is used for local end-to-end testing, so a local
+		// address must not be treated as the bug it looks like.
+		"https://localhost:8080",
+		"https://127.0.0.1:8443",
+	} {
+		cfg := Config{Env: EnvProduction, PublicBaseURL: base, CronSecret: "c"}
+		if err := cfg.ValidateForProduction(); err != nil {
+			t.Errorf("ValidateForProduction() rejected %q: %v", base, err)
+		}
+	}
+}
+
+// A path in PUBLIC_BASE_URL would end up inside the signup redirect URI, which
+// Meta matches character for character.
+func TestValidateForProductionRejectsAPath(t *testing.T) {
+	cfg := Config{Env: EnvProduction, PublicBaseURL: "https://wasatn.onrender.com/app", CronSecret: "c"}
+	err := cfg.ValidateForProduction()
+	if err == nil || !strings.Contains(err.Error(), "path") {
+		t.Fatalf("error = %v, want a path complaint", err)
+	}
+}
+
+// The same check must not stop a development build from booting on a LAN name.
+func TestValidateForProductionIgnoresDevelopment(t *testing.T) {
+	cfg := Config{Env: EnvDevelopment, PublicBaseURL: "http://nas:8080"}
+	if err := cfg.ValidateForProduction(); err != nil {
+		t.Fatalf("ValidateForProduction() = %v, want nil in development", err)
+	}
+}
+
 func TestValidateForProductionAllowsMissingMeta(t *testing.T) {
 	t.Parallel()
 

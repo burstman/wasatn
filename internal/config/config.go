@@ -282,6 +282,41 @@ func (c *Config) ValidateForProduction() error {
 	if c.CronSecret == "" {
 		return errors.New("config: CRON_SECRET is required in production")
 	}
+	if err := checkPublicHost(c.PublicBaseURL); err != nil {
+		return err
+	}
+	return nil
+}
+
+// checkPublicHost rejects a PUBLIC_BASE_URL that cannot be reached from outside.
+//
+// A single-label host is almost always a platform handing out a short service
+// name rather than a domain: Render's blueprint property `host` yields "myapp",
+// not "myapp.onrender.com", so PUBLIC_BASE_URL silently becomes "https://myapp".
+// Everything still appears to work, and the failure lands later as an OAuth
+// redirect Meta refuses because it matches no registered URI. Local addresses are
+// allowed because production mode is used for local end-to-end testing.
+func checkPublicHost(baseURL string) error {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("config: PUBLIC_BASE_URL is invalid: %w", err)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return fmt.Errorf("config: PUBLIC_BASE_URL must include a host, got %q", baseURL)
+	}
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return nil
+	}
+	if !strings.Contains(host, ".") {
+		return fmt.Errorf(
+			"config: PUBLIC_BASE_URL host %q is not a public domain; "+
+				"set it to the full hostname, for example https://myapp.onrender.com", host)
+	}
+	if u.Path != "" {
+		return fmt.Errorf("config: PUBLIC_BASE_URL must not have a path, got %q", baseURL)
+	}
 	return nil
 }
 
@@ -310,8 +345,9 @@ func parseTokenKey(raw string) ([]byte, error) {
 }
 
 // parseBaseURL accepts a full URL. A bare host with no scheme is treated as
-// https, because that is what PaaS hosts hand out: Render's blueprint
-// `fromService` property yields "myapp.onrender.com", not a full URL.
+// https, because that is what a PaaS hands out when it has no scheme to give.
+// The host itself must still be a real domain: on Render the blueprint property
+// to use is `hostedDomainName`, since `host` yields only the short service name.
 func parseBaseURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw != "" && !strings.Contains(raw, "://") {
