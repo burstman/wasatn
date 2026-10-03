@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -159,10 +160,13 @@ func TestCallbackRejectsAMismatchedState(t *testing.T) {
 			queries := newFakeQueries()
 			h := newTestHandlers(t, flow, newService(t, queries, graph), testSignupConfig())
 
-			rec := serve(t, h.Callback, jsonRequest(`{"code":"auth-code","state":`+quote(tc.returned)+`}`))
+			rec := serve(t, h.Index, signupReturn("auth-code", tc.returned))
 
-			if rec.Code == http.StatusOK || rec.Code == http.StatusSeeOther {
-				t.Fatalf("status = %d, want a refusal for %s", rec.Code, tc.reason)
+			if rec.Code != http.StatusSeeOther {
+				t.Fatalf("status = %d, want a redirect for %s", rec.Code, tc.reason)
+			}
+			if len(flow.flashes) != 1 || !strings.HasPrefix(flow.flashes[0], "error:") {
+				t.Fatalf("flashes = %v, want one error for %s", flow.flashes, tc.reason)
 			}
 			if len(graph.calls) != 0 {
 				t.Fatalf("the code was exchanged anyway: %v", graph.calls)
@@ -183,7 +187,7 @@ func TestCallbackConsumesTheStateSoItCannotBeReplayed(t *testing.T) {
 	queries := newFakeQueries()
 	h := newTestHandlers(t, flow, newService(t, queries, defaultGraph()), testSignupConfig())
 
-	rec := serve(t, h.Callback, jsonRequest(`{"code":"auth-code","state":"expected"}`))
+	rec := serve(t, h.Index, signupReturn("auth-code", "expected"))
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303: %s", rec.Code, rec.Body.String())
 	}
@@ -192,9 +196,9 @@ func TestCallbackConsumesTheStateSoItCannotBeReplayed(t *testing.T) {
 	}
 
 	// Replaying the same code must now fail, because there is no state left.
-	rec = serve(t, h.Callback, jsonRequest(`{"code":"auth-code","state":"expected"}`))
-	if rec.Code == http.StatusSeeOther {
-		t.Fatal("a replayed callback was accepted")
+	rec = serve(t, h.Index, signupReturn("auth-code", "expected"))
+	if !strings.HasPrefix(flow.flashes[len(flow.flashes)-1], "error:") {
+		t.Fatalf("a replayed return was accepted: %v", flow.flashes)
 	}
 	if len(queries.upserts) != 1 {
 		t.Fatalf("the replay stored another connection: %d rows", len(queries.upserts))
@@ -208,28 +212,31 @@ func TestCallbackRejectsAnEmptyCode(t *testing.T) {
 	graph := defaultGraph()
 	h := newTestHandlers(t, flow, newService(t, newFakeQueries(), graph), testSignupConfig())
 
-	rec := serve(t, h.Callback, jsonRequest(`{"code":"  ","state":"expected"}`))
+	rec := serve(t, h.Index, signupReturn("  ", "expected"))
 
-	if rec.Code == http.StatusSeeOther {
-		t.Fatal("an empty code was accepted")
+	// A blank code is not a return at all, so the page renders and Meta is never
+	// called.
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want the page: %s", rec.Code, rec.Body.String())
+	}
+	if len(flow.flashes) != 0 {
+		t.Errorf("a blank code produced a flash: %v", flow.flashes)
 	}
 	if len(graph.calls) != 0 {
 		t.Fatalf("an empty code reached Meta: %v", graph.calls)
 	}
 }
 
-func TestCallbackAcceptsAFormPost(t *testing.T) {
+// A completed signup redirects without leaving the code in the address bar,
+// which matters because the popup that lands here is the one holding it.
+func TestCallbackStoresTheSignupAndRedirects(t *testing.T) {
 	flow := newFakeFlow(testUser)
 	flow.values[FlowStateKey] = "expected"
 
 	queries := newFakeQueries()
 	h := newTestHandlers(t, flow, newService(t, queries, defaultGraph()), testSignupConfig())
 
-	body := strings.NewReader("code=auth-code&state=expected")
-	req := httptest.NewRequest(http.MethodPost, "/connections/callback", body)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	rec := serve(t, h.Callback, req)
+	rec := serve(t, h.Index, signupReturn("auth-code", "expected"))
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("status = %d, want 303: %s", rec.Code, rec.Body.String())
 	}
@@ -241,16 +248,45 @@ func TestCallbackAcceptsAFormPost(t *testing.T) {
 	}
 }
 
-func TestCallbackRefusesWhenSignupIsNotConfigured(t *testing.T) {
+// Facebook reports a refusal in the query string rather than as a code, and the
+// customer is sitting on the page that opened the dialog, so it becomes a flash.
+func TestCallbackExplainsADenial(t *testing.T) {
 	flow := newFakeFlow(testUser)
-	h := newTestHandlers(t, flow, nil, SignupConfig{})
+	flow.values[FlowStateKey] = "expected"
 
-	rec := serve(t, h.Callback, jsonRequest(`{"code":"c","state":"s"}`))
-	if rec.Code == http.StatusSeeOther {
-		t.Fatal("the callback ran while signup was unconfigured")
+	graph := defaultGraph()
+	h := newTestHandlers(t, flow, newService(t, newFakeQueries(), graph), testSignupConfig())
+
+	req := httptest.NewRequest(http.MethodGet, "/connections?error=access_denied&error_description=User+denied", nil)
+	rec := serve(t, h.Index, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want 303: %s", rec.Code, rec.Body.String())
+	}
+	if len(flow.flashes) != 1 || !strings.Contains(flow.flashes[0], "User denied") {
+		t.Errorf("flashes = %v, want Meta's own reason", flow.flashes)
+	}
+	if len(graph.calls) != 0 {
+		t.Fatalf("a denial reached Meta: %v", graph.calls)
+	}
+}
+
+// A code arriving on a server with no Meta configuration is just a stray query
+// parameter, so the page renders as usual and nothing is exchanged.
+func TestIndexIgnoresASignupReturnWhenSignupIsNotConfigured(t *testing.T) {
+	flow := newFakeFlow(testUser)
+	graph := defaultGraph()
+	h := newTestHandlers(t, flow, newService(t, newFakeQueries(), graph), SignupConfig{})
+
+	rec := serve(t, h.Index, signupReturn("c", "s"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want the page: %s", rec.Code, rec.Body.String())
 	}
 	if flow.takeCalls != 0 {
-		t.Fatal("the state was consumed by a refused request")
+		t.Fatal("the state was consumed by an ignored return")
+	}
+	if len(graph.calls) != 0 {
+		t.Fatalf("an ignored return still reached Meta: %v", graph.calls)
 	}
 }
 
@@ -498,10 +534,15 @@ func serveRoute(t *testing.T, pattern string, handler func(*kit.Kit) error, req 
 	return rec
 }
 
-func jsonRequest(body string) *http.Request {
-	req := httptest.NewRequest(http.MethodPost, "/connections/callback", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	return req
+// signupReturn is the request Facebook makes when it hands a signup back: a GET
+// of the connections page carrying the authorization code and the state.
+func signupReturn(code, state string) *http.Request {
+	query := url.Values{}
+	if code != "" {
+		query.Set("code", code)
+	}
+	query.Set("state", state)
+	return httptest.NewRequest(http.MethodGet, "/connections?"+query.Encode(), nil)
 }
 
 func quote(s string) string {

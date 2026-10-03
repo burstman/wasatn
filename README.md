@@ -82,17 +82,25 @@ static            CSS, vendored htmx and Alpine
 
 ## Connecting a WhatsApp number
 
-`/connections` runs Meta's **Classic Embedded Signup v4** through the Facebook
-Login JavaScript SDK. The browser loads the SDK on demand, asks the server for a
-one-shot state value, opens the dialog, and posts the returned authorization
-code back to the server, which completes the exchange.
+`/connections` runs Meta's **Classic Embedded Signup v4**. The browser asks the
+server for a one-shot state value, opens Meta's Facebook Login dialog in a popup
+it opens itself, and the dialog hands the authorization code back to
+`/connections`, where the server completes the exchange and redirects.
+
+No third-party script is loaded. The dialog is Meta's own
+`/dialog/oauth` URL with `config_id`, which is what `FB.login` assembles anyway,
+and `window.open` inside the click handler is a user gesture no browser or
+popup blocker can refuse. The SDK's `FB.login` was tried first and dropped: it
+opens its window from a promise callback, so Firefox refuses it as
+un-user-initiated without a word, and it either runs before its own `FB.init`
+or not at all.
 
 Setting it up requires four things:
 
 | Where | What |
 | --- | --- |
 | App settings > Basic | `META_APP_ID` and `META_APP_SECRET` |
-| WhatsApp > Embedded Signup | `META_FB_CONFIG_ID`, the configuration id passed to the SDK |
+| WhatsApp > Embedded Signup | `META_FB_CONFIG_ID`, the configuration id passed to the dialog |
 | Facebook Login > Settings | The exact redirect URI below, as a valid OAuth redirect URI |
 | App settings > Basic > App domains | The bare host of `PUBLIC_BASE_URL` |
 
