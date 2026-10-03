@@ -16,8 +16,10 @@ services:
     runtime: go
     plan: free
     region: oregon
-    buildCommand: go build -o /tmp/server ./cmd/server
-    startCommand: /tmp/server
+    # The binary must be written inside the project directory: Render uploads
+    # the build output to the runtime container, and /tmp does not come along.
+    buildCommand: go build -o ./bin/server ./cmd/server
+    startCommand: ./bin/server
     healthCheckPath: /healthz
     # The Go version comes from .go-version so a Render image change cannot
     # silently downgrade the build below River's 1.26 requirement.
@@ -58,6 +60,6 @@ services:
   #   runtime: go
   #   plan: starter
   #   region: oregon
-  #   buildCommand: go build -o /tmp/worker ./cmd/worker
-  #   startCommand: /tmp/worker
+  #   buildCommand: go build -o ./bin/worker ./cmd/worker
+  #   startCommand: ./bin/worker
   #   envVars: ...
