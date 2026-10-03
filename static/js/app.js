@@ -58,6 +58,11 @@
   var SDK_TIMEOUT_MS = 12000;
   var statePromise = null;
   var stateValue = "";
+  // sdkFb is only set once FB.init has actually returned. window.FB on its own
+  // proves nothing: the SDK defines it while it is still initialising, and
+  // FB.login on that copy throws "FB.login() called before FB.init()".
+  var sdkFb = null;
+  var sdkError = null;
 
   function showSignupError(button, message) {
     var box = document.getElementById("signup-error");
@@ -84,6 +89,10 @@
   // A failed attempt clears sdkPromise so a retry injects the script again
   // rather than reusing a rejected promise forever.
   function loadSdk(version) {
+    if (sdkFb) {
+      return Promise.resolve(sdkFb);
+    }
+    sdkError = null;
     if (sdkPromise) {
       return sdkPromise;
     }
@@ -109,6 +118,7 @@
         }
         settled = true;
         sdkPromise = null;
+        sdkError = message;
         cleanup();
         reject(new Error(message));
       }
@@ -128,8 +138,9 @@
           return;
         }
         settled = true;
+        sdkFb = window.FB;
         cleanup();
-        resolve(window.FB);
+        resolve(sdkFb);
       }
 
       if (window.FB) {
@@ -313,7 +324,7 @@
 
 
     try {
-      window.FB.login(function (authResponse) {
+      sdkFb.login(function (authResponse) {
         settled = true;
         dialogPending = false;
         if (watchdog) {
@@ -373,9 +384,27 @@
     }
     clearSignupError();
 
-    // Everything must already be resolved: FB.login has to run inside the click
-    // itself so the popup counts as user-initiated.
-    if (!window.FB || !stateValue) {
+    // Initialise here rather than trusting whatever the preload managed: init and
+    // login must happen in the same gesture, and in that order.
+    if (!sdkFb && window.FB && !sdkPromise) {
+      try {
+        window.FB.init({ xfbml: false, version: button.dataset.version });
+        sdkFb = window.FB;
+        sdkError = null;
+      } catch (err) {
+        showSignupError(
+          button,
+          "Facebook's sign-up did not start (" +
+            (err && err.message ? err.message : "unknown error") +
+            "). Reload the page and try again."
+        );
+        return;
+      }
+    }
+
+    // Everything must be ready before the click returns: FB.login has to run
+    // inside the click itself so the popup counts as user-initiated.
+    if (!sdkFb || !stateValue) {
       warmUp(button);
       button.disabled = true;
       button.textContent = "Loading Facebook…";
@@ -387,7 +416,7 @@
           showSignupError(button, "Facebook is ready now. Click Connect WhatsApp again.");
         })
         .catch(function (err) {
-          showSignupError(button, err.message || "Could not start the sign-up.");
+          showSignupError(button, err.message || sdkError || "Could not start the sign-up.");
         });
       return;
     }
