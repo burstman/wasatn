@@ -82,18 +82,20 @@ static            CSS, vendored htmx and Alpine
 
 ## Connecting a WhatsApp number
 
-`/connections` runs Meta's **Classic Embedded Signup v4**. The browser asks the
-server for a one-shot state value, opens Meta's Facebook Login dialog in a popup
-it opens itself, and the dialog hands the authorization code back to
-`/connections`, where the server completes the exchange and redirects.
+`/connections` runs Meta's **Classic Embedded Signup v4** through Facebook's
+JavaScript SDK, which is the only supported way in: the dialog posts back to the
+window that spawned it and hands that window the code, so a dialog opened by hand
+closes itself after a couple of seconds with nothing to say.
 
-No third-party script is loaded. The dialog is Meta's own
-`/dialog/oauth` URL with `config_id`, which is what `FB.login` assembles anyway,
-and `window.open` inside the click handler is a user gesture no browser or
-popup blocker can refuse. The SDK's `FB.login` was tried first and dropped: it
-opens its window from a promise callback, so Firefox refuses it as
-un-user-initiated without a word, and it either runs before its own `FB.init`
-or not at all.
+The page therefore asks the server for a one-shot state value, loads the SDK and
+calls `FB.init` before anyone clicks, and then calls `FB.login` from the click
+handler itself, because the SDK opens its popup with `window.open` and Firefox
+refuses a window that is not opened from a real user gesture. The code is valid
+for 30 seconds, so it goes straight back to `/connections/callback`, which
+exchanges it, stores the connection and redirects; the page then reloads to show
+the flash. Two failures cost time and are now avoided deliberately: `FB.init`
+without an `appId` never finishes initialising, and waiting on a `fetch` before
+`FB.login` costs the gesture.
 
 Setting it up requires four things:
 
@@ -101,8 +103,10 @@ Setting it up requires four things:
 | --- | --- |
 | App settings > Basic | `META_APP_ID` and `META_APP_SECRET` |
 | WhatsApp > Embedded Signup | `META_FB_CONFIG_ID`, the configuration id passed to the dialog |
-| Facebook Login > Settings | The exact redirect URI below, as a valid OAuth redirect URI |
+| Facebook Login for Business > Settings > Client OAuth settings | Client OAuth login, Web OAuth login, Enforce HTTPS, Embedded Browser OAuth Login, use Strict Mode for redirect URIs, and Login with the JavaScript SDK all on |
+| Facebook Login for Business > Settings | The bare host of `PUBLIC_BASE_URL` in Allowed domains, and the exact redirect URI below in Valid OAuth redirect URIs |
 | App settings > Basic > App domains | The bare host of `PUBLIC_BASE_URL` |
+| App roles | Your own account, so you can test the flow with your own Meta credentials |
 
 The redirect URI is derived, not configured separately, so it cannot drift from
 the deployment:

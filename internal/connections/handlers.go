@@ -2,7 +2,9 @@ package connections
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -22,6 +24,10 @@ import (
 // FlowStateKey names the session value holding the state that proves a signup
 // round trip came back from Meta rather than being forged.
 const FlowStateKey = "whatsapp_signup"
+
+// MaxCallbackBytes caps the callback body. It carries two short strings, so
+// anything larger is not a browser bug worth serving.
+const MaxCallbackBytes = 8 << 10
 
 // TokenWarningWindow is how far ahead of expiry the connections page warns.
 const TokenWarningWindow = whatsapp.TokenExpiryWarningWindow
@@ -89,10 +95,16 @@ func (h *Handlers) SignupView() web.SignupView {
 
 // Index renders the connections page.
 func (h *Handlers) Index(k *kit.Kit) error {
-	// Meta sends the customer back to this same URL once the dialog is done, so a
-	// signup return arrives as query parameters on an ordinary page load.
-	if h.Enabled() && isSignupReturn(k.Request.URL.Query()) {
-		return h.completeSignup(k)
+	// Facebook's dialog normally hands the code to this page's own window, but it
+	// falls back to a plain redirect when the customer declines it, so a query
+	// string is how a refusal arrives.
+	if h.Enabled() && isSignupDenial(k.Request.URL.Query()) {
+		reason := strings.TrimSpace(k.Request.URL.Query().Get("error_description"))
+		if reason == "" {
+			reason = strings.TrimSpace(k.Request.URL.Query().Get("error"))
+		}
+		h.flow.Flash(k.Request, "error", "Facebook did not complete the sign-up: "+reason)
+		return httpx.Redirect(k, http.StatusSeeOther, "/connections")
 	}
 
 	rows, err := h.service.List(k.Request.Context(), h.flow.UserID(k.Request))
@@ -105,60 +117,11 @@ func (h *Handlers) Index(k *kit.Kit) error {
 	}))
 }
 
-// isSignupReturn reports whether this request is Facebook handing a signup back
-// rather than the customer browsing to their connections.
-func isSignupReturn(q url.Values) bool {
-	return strings.TrimSpace(q.Get("code")) != "" || strings.TrimSpace(q.Get("error")) != ""
-}
-
-// completeSignup finishes a signup that came back through the query string.
-//
-// It always ends in a redirect: the browser that lands here is the popup that
-// ran the dialog, and the customer is waiting on the page that opened it. A
-// flash is the only way to tell them how it went.
-func (h *Handlers) completeSignup(k *kit.Kit) error {
-	query := k.Request.URL.Query()
-	userID := h.flow.UserID(k.Request)
-	code := strings.TrimSpace(query.Get("code"))
-	state := strings.TrimSpace(query.Get("state"))
-
-	if denied := strings.TrimSpace(query.Get("error")); denied != "" {
-		reason := strings.TrimSpace(query.Get("error_description"))
-		if reason == "" {
-			reason = denied
-		}
-		h.flow.Flash(k.Request, "error", "Facebook did not complete the sign-up: "+reason)
-		return httpx.Redirect(k, http.StatusSeeOther, "/connections")
-	}
-
-	// The state is consumed whatever happens next, so a leaked authorization code
-	// cannot be replayed with a fresh state.
-	expected := h.flow.TakeFlowValue(k.Request, FlowStateKey)
-	switch {
-	case !ValidState(expected, state):
-		h.flow.Flash(k.Request, "error", "That sign-up attempt has expired. Start again from the Connect WhatsApp button.")
-		return httpx.Redirect(k, http.StatusSeeOther, "/connections")
-	case code == "":
-		h.flow.Flash(k.Request, "error", "Facebook did not return an authorization code. Start again from the Connect WhatsApp button.")
-		return httpx.Redirect(k, http.StatusSeeOther, "/connections")
-	}
-
-	result, err := h.service.Connect(k.Request.Context(), userID, code, h.signup.RedirectURI)
-	if err != nil {
-		h.logSignupFailure(k, userID, err)
-		h.flow.Flash(k.Request, "error", signupErrorMessage(err))
-		return httpx.Redirect(k, http.StatusSeeOther, "/connections")
-	}
-
-	h.log.InfoContext(k.Request.Context(), "embedded signup completed",
-		"user_id", userID,
-		"request_id", httpx.RequestID(k.Request),
-		"accounts", result.Accounts,
-		"connections", len(result.Connections),
-		"pending_phone", result.PendingPhone,
-	)
-	h.flow.Flash(k.Request, "success", signupSummary(result))
-	return httpx.Redirect(k, http.StatusSeeOther, "/connections")
+// isSignupDenial reports whether this request is Facebook reporting a refusal,
+// which it does only on its fallback redirect: a completed flow comes back as a
+// code handed to the page by the SDK.
+func isSignupDenial(q url.Values) bool {
+	return strings.TrimSpace(q.Get("error")) != "" && strings.TrimSpace(q.Get("code")) == ""
 }
 
 // SignupState issues the state value that proves the signup round trip.
@@ -180,6 +143,49 @@ func (h *Handlers) SignupState(k *kit.Kit) error {
 
 	k.Response.Header().Set("Cache-Control", "no-store")
 	return httpx.JSON(k, http.StatusOK, map[string]string{"state": state})
+}
+
+// Callback completes a signup.
+//
+// Embedded Signup hands the authorization code to the page that spawned the
+// dialog, so this always arrives as a request from our own JavaScript. It also
+// accepts a form post, so the flow still works if the script has to fall back.
+//
+// The code is valid for 30 seconds, so there is nothing useful to do with it
+// but exchange it here.
+func (h *Handlers) Callback(k *kit.Kit) error {
+	if !h.Enabled() {
+		return httpx.BadRequest("Meta Embedded Signup is not configured on this server.")
+	}
+
+	userID := h.flow.UserID(k.Request)
+	code, state := signupParams(k)
+
+	// The state is consumed whatever happens next, so a leaked authorization code
+	// cannot be replayed with a fresh state.
+	expected := h.flow.TakeFlowValue(k.Request, FlowStateKey)
+	if !ValidState(expected, state) {
+		return httpx.BadRequest("That sign-up attempt has expired. Start again from the Connect WhatsApp button.")
+	}
+	if code == "" {
+		return httpx.BadRequest("Facebook did not return an authorization code. Start again from the Connect WhatsApp button.")
+	}
+
+	result, err := h.service.Connect(k.Request.Context(), userID, code, h.signup.RedirectURI)
+	if err != nil {
+		h.logSignupFailure(k, userID, err)
+		return signupError(err)
+	}
+
+	h.log.InfoContext(k.Request.Context(), "embedded signup completed",
+		"user_id", userID,
+		"request_id", httpx.RequestID(k.Request),
+		"accounts", result.Accounts,
+		"connections", len(result.Connections),
+		"pending_phone", result.PendingPhone,
+	)
+	h.flow.Flash(k.Request, "success", signupSummary(result))
+	return httpx.Redirect(k, http.StatusSeeOther, "/connections")
 }
 
 // Disconnect ends a connection and pauses its campaigns.
@@ -225,6 +231,28 @@ func (h *Handlers) Disconnect(k *kit.Kit) error {
 // Count is the dashboard's number of connected WhatsApp numbers.
 func (h *Handlers) Count(ctx context.Context, userID uuid.UUID) (int, error) {
 	return h.service.Count(ctx, userID)
+}
+
+// signupParams reads the code and state from either a JSON body or a form post.
+func signupParams(k *kit.Kit) (code, state string) {
+	if isJSON(k.Request) {
+		var body struct {
+			Code  string `json:"code"`
+			State string `json:"state"`
+		}
+		if err := json.NewDecoder(io.LimitReader(k.Request.Body, MaxCallbackBytes)).Decode(&body); err != nil {
+			// The body is consumed, so a form fallback is not possible. An empty
+			// code produces the "start again" message, which is the right outcome
+			// for a truncated or non-JSON body.
+			return "", ""
+		}
+		return strings.TrimSpace(body.Code), strings.TrimSpace(body.State)
+	}
+	return strings.TrimSpace(k.Request.PostFormValue("code")), strings.TrimSpace(k.Request.PostFormValue("state"))
+}
+
+func isJSON(r *http.Request) bool {
+	return strings.Contains(r.Header.Get("Content-Type"), "application/json")
 }
 
 // signupError maps a signup failure onto a message the customer can act on.

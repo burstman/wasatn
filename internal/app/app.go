@@ -160,12 +160,11 @@ func (a *App) Router() http.Handler {
 		})
 		r.Get("/dashboard", kit.Handler(a.dashboardPage))
 
-		// Facebook returns the customer to signup.RedirectURI, which is this page,
-		// so Index completes a signup that arrives as query parameters.
 		r.Get("/connections", kit.Handler(a.Connections.Index))
 		// The state endpoint is a POST: it mutates the session, so a GET would
 		// let a third-party page prime it from a victim's browser.
 		r.Post("/connections/signup-state", kit.Handler(a.Connections.SignupState))
+		r.Post("/connections/callback", kit.Handler(a.Connections.Callback))
 		r.Post("/connections/{id}/disconnect", kit.Handler(a.Connections.Disconnect))
 	})
 

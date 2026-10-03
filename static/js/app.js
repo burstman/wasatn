@@ -5,15 +5,10 @@
 //      to wire it up individually.
 //   2. Confirm destructive actions.
 //   3. Drive Meta Embedded Signup on the connections page: ask the server for a
-//      state value, open the Facebook Login dialog, then hand the authorization
-//      code back to our own endpoint.
+//      state value, run Facebook's Embedded Signup dialog through its SDK, then
+//      hand the authorization code back to our own endpoint.
 (function () {
   "use strict";
-
-  // Facebook's SDK is loaded lazily and only on the connections page. Bundling it
-  // in would cost every visitor a third-party script they do not need.
-  var SDK_SRC = "https://connect.facebook.net/en_US/sdk.js";
-  var sdkPromise = null;
 
   function csrfToken() {
     var meta = document.querySelector('meta[name="csrf-token"]');
@@ -52,24 +47,30 @@
 
   // --- Embedded Signup -----------------------------------------------------
   //
-  // The dialog is Meta's own Facebook Login URL, opened by us in a popup.
+  // Embedded Signup is launched by Facebook's JavaScript SDK, not by a URL we
+  // assemble. The dialog sends the customer back to the window that spawned it and
+  // hands that window the exchangeable code, so a dialog opened by hand has
+  // nothing to talk to: it closes itself a couple of seconds in. FB.login is the
+  // only supported way in.
   //
-  // The obvious alternative is the Facebook JavaScript SDK's FB.login(), which is
-  // what the SDK exists to do, but it is not usable here. It opens its dialog with
-  // window.open from inside a promise callback, so Firefox refuses the popup as
-  // un-user-initiated and says nothing at all; its readiness is not observable, so
-  // FB.login either runs too early and is rejected with "FB.login() called before
-  // FB.init()", or hangs; and the third-party script is one more thing for an ad
-  // blocker or a corporate proxy to stop. A plain window.open in the click handler
-  // is a user gesture the browser cannot refuse, and it puts no third-party script
-  // on the page. Meta still owns the dialog, and config_id still selects the same
-  // Embedded Signup configuration.
+  // Three details in the flow are not optional. FB.init needs appId, and without it
+  // the SDK never finishes initialising and FB.login answers "FB.login() called
+  // before FB.init()". FB.login has to run in the click handler itself, because it
+  // opens the dialog with window.open and Firefox refuses a window opened from
+  // anything but a real user gesture. And the state value the server hands out is
+  // fetched up front, so waiting for it never delays the click.
   //
-  // Facebook returns the customer to signup.RedirectURI, which is this page, so the
-  // code comes back as query parameters and the server finishes the job.
+  // The code is valid for 30 seconds, so it goes straight back to our endpoint,
+  // which exchanges it and redirects; Meta never redirects this browser itself.
+  //
+  // The SDK is loaded on the connections page only, since every other visitor has
+  // no use for a third-party script.
 
+  var SDK_SRC = "https://connect.facebook.net/en_US/sdk.js";
+  var sdkReady = null;
+  var running = false;
+  var watchdog = 0;
   var statePromise = null;
-  var stateValue = "";
 
   function showSignupError(button, message) {
     var box = document.getElementById("signup-error");
@@ -91,9 +92,54 @@
     }
   }
 
+  // loadSDK puts Facebook's script on the page and resolves once FB.init is done.
+  //
+  // fbAsyncInit is the SDK's own readiness hook: the script calls it when it is
+  // loaded, which is the only signal that FB.init is safe to call.
+  function loadSDK(button) {
+    if (sdkReady) {
+      return sdkReady;
+    }
+    sdkReady = new Promise(function (resolve, reject) {
+      window.fbAsyncInit = function () {
+        try {
+          window.FB.init({
+            appId: button.dataset.appId,
+            autoLogAppEvents: true,
+            xfbml: true,
+            version: button.dataset.version,
+          });
+          resolve();
+        } catch (err) {
+          reject(new Error("Facebook could not start (" + err.message + "). Reload the page and try again."));
+        }
+      };
+
+      if (window.FB && window.FB.init) {
+        window.fbAsyncInit();
+        return;
+      }
+
+      var script = document.createElement("script");
+      script.async = true;
+      script.defer = true;
+      script.crossOrigin = "anonymous";
+      script.src = SDK_SRC;
+      script.onerror = function () {
+        reject(new Error("Facebook's script did not load. Check your connection or any ad blocker, then try again."));
+      };
+      document.head.appendChild(script);
+    });
+    sdkReady.catch(function () {
+      sdkReady = null;
+    });
+    return sdkReady;
+  }
+
   // requestState asks our own server for the state value that proves the signup
-  // round trip came back from Meta. It is fetched per attempt rather than cached
-  // forever, because the server clears it once it is used.
+  // round trip came back from Meta. It is fetched before the click rather than in
+  // it, so that waiting for it cannot cost us the user gesture. The server clears
+  // it once it has been used.
   function requestState(button) {
     return fetch(button.dataset.stateUrl, {
       method: "POST",
@@ -123,130 +169,118 @@
     }
     statePromise = requestState(button).catch(function (err) {
       statePromise = null;
-      // The preload is an optimisation; a failure is reported on the click.
       throw err;
     });
     statePromise.catch(function () {});
     return statePromise;
   }
 
-  // dialogURL builds the Facebook Login URL for Embedded Signup.
-  //
-  // This is the URL FB.login would have assembled: config_id selects the Embedded
-  // Signup configuration and response_type=code asks for an authorization code
-  // instead of a cookie. No scope is requested, because the pages_* scopes were
-  // deprecated in Graph v19 and a new app cannot obtain them without App Review.
-  function dialogURL(button, state) {
-    var query = [
-      "client_id=" + encodeURIComponent(button.dataset.appId),
-      "redirect_uri=" + encodeURIComponent(button.dataset.redirectUri),
-      "response_type=code",
-      "config_id=" + encodeURIComponent(button.dataset.configId),
-      "state=" + encodeURIComponent(state),
-    ].join("&");
-    return "https://www.facebook.com/" + button.dataset.version + "/dialog/oauth?" + query;
-  }
-
-  // POPUP_FEATURES is a dialog-sized window rather than Meta's default, which is a
-  // full tab on some browsers.
-  var POPUP_FEATURES = "popup=true,width=520,height=680,menubar=no,toolbar=no,location=yes";
-
-  var signupPopup = null;
-  var poll = null;
-
-  // watchPopup reports back once the dialog is over.
-  //
-  // Facebook navigates the popup to our own page to hand over the code, and that
-  // page redirects again once the server has stored the connection, so the popup
-  // coming back to our origin means the work is done. Reading its location is
-  // blocked until then, which is the expected case rather than an error.
-  function watchPopup() {
-    if (poll) {
-      clearInterval(poll);
-    }
-    poll = setInterval(function () {
-      if (!signupPopup || signupPopup.closed) {
-        clearInterval(poll);
-        poll = null;
-        // The server may have stored the connection before the popup closed, and a
-        // flash survives the reload either way, so reload rather than guess.
-        window.location.reload();
-        return;
-      }
-      var back = false;
-      try {
-        back = signupPopup.location.href.indexOf(window.location.origin) === 0;
-      } catch (err) {
-        return; // Still on facebook.com, which is cross-origin and unreadable.
-      }
-      if (back) {
-        clearInterval(poll);
-        poll = null;
-        signupPopup.close();
-        window.location.reload();
-      }
-    }, 1500);
-  }
-
-  // openDialog opens the Facebook window and sends it to the dialog.
-  //
-  // The window itself is opened here, synchronously, because a browser only lets
-  // a popup open from inside the gesture that asked for it; the dialog URL needs
-  // the state value, which may still be in flight. So the popup opens blank and is
-  // pointed at Meta as soon as the state arrives. Navigating a window we opened is
-  // allowed even once it is on another origin, which is what makes this work.
-  function openDialog(button) {
-    var popup = window.open("about:blank", "wasatn-whatsapp-signup", POPUP_FEATURES);
-    if (!popup) {
-      showSignupError(
-        button,
-        "Your browser blocked the Facebook sign-up window. Allow popups for this site " +
-          "(the icon on the left of the address bar) and try again."
-      );
+  // Embedded Signup reports what happened to the flow as a message from Facebook:
+  // the assets it issued on success, or the screen the customer gave up on. The
+  // identifiers are not needed, because the server reads the same information from
+  // the exchanged token, but a failure here names the screen worth looking at.
+  window.addEventListener("message", function (event) {
+    if (!event.origin.endsWith("facebook.com")) {
       return;
     }
-    signupPopup = popup;
-    button.textContent = "Finish in the Facebook window…";
-    // about:blank inherits our origin, so the placeholder can be styled. If it
-    // cannot be written to, the dialog replaces it a moment later anyway.
-    try {
-      popup.document.write(
-        "<!doctype html><title>WasaTN</title>" +
-          '<body style="font:15px system-ui;margin:3rem;color:#334155">' +
-          "<p>Opening Facebook…</p></body>"
-      );
-    } catch (err) {
-      // Nothing to do: the navigation below is what matters.
+    var data = event.data;
+    if (typeof data === "string") {
+      try {
+        data = JSON.parse(data);
+      } catch (err) {
+        return;
+      }
     }
+    if (!data || data.type !== "WA_EMBEDDED_SIGNUP" || data.event !== "CANCEL") {
+      return;
+    }
+    if (data.data && data.data.error_message) {
+      console.warn("Embedded signup failed:", data.data.error_code, data.data.error_message);
+    } else if (data.data && data.data.current_step) {
+      console.warn("Embedded signup abandoned at:", data.data.current_step);
+    }
+  });
 
+  // finishSignup hands the code back to our own endpoint, which exchanges it
+  // before it expires and answers with a redirect. Following that redirect and
+  // reloading shows the flash the server left for the customer.
+  function finishSignup(button, code) {
+    button.textContent = "Connecting…";
     warmUp(button)
       .then(function (state) {
-        stateValue = state;
-        popup.location = dialogURL(button, state);
-        watchPopup();
+        return fetch(button.dataset.callbackUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-CSRF-Token": csrfToken(),
+            "X-Requested-With": "XMLHttpRequest",
+          },
+          credentials: "same-origin",
+          body: JSON.stringify({ code: code, state: state }),
+        });
+      })
+      .then(function (response) {
+        if (!response.ok) {
+          return response.json().then(
+            function (body) {
+              throw new Error((body && body.message) || "The sign-up could not be completed.");
+            },
+            function () {
+              throw new Error("The sign-up could not be completed. Start again from the Connect WhatsApp button.");
+            }
+          );
+        }
+        window.location.reload();
       })
       .catch(function (err) {
-        popup.close();
-        signupPopup = null;
-        showSignupError(button, err.message || "Could not start the sign-up.");
+        showSignupError(button, err.message || "The sign-up could not be completed.");
       });
   }
 
   function startSignup(button) {
-    if (button.disabled) {
+    if (running) {
       return;
     }
     clearSignupError();
+    button.textContent = "Opening Facebook…";
+    button.disabled = true;
 
-    // A dialog we already opened is somewhere else on the screen, quite possibly
-    // behind this tab, so a second click brings it back instead of starting a
-    // competing flow.
-    if (signupPopup && !signupPopup.closed) {
-      signupPopup.focus();
-      return;
-    }
+    loadSDK(button).then(
+      function () {
+        // Nothing between the click and this call, so the popup it opens is a
+        // user gesture the browser cannot refuse.
+        window.FB.login(
+          function (response) {
+            window.clearTimeout(watchdog);
+            var code = response && response.authResponse ? response.authResponse.code : "";
+            if (!code) {
+              running = false;
+              showSignupError(button, "Facebook did not return an authorization code. Pick your business account in the dialog and try again.");
+              return;
+            }
+            finishSignup(button, code);
+          },
+          {
+            config_id: button.dataset.configId,
+            response_type: "code",
+            override_default_response_type: true,
+            extras: { setup: {} },
+          }
+        );
+      },
+      function (err) {
+        showSignupError(button, err.message);
+      }
+    );
 
-    openDialog(button);
+    running = true;
+    // Embedded Signup can be left open indefinitely, but a button that never
+    // comes back looks broken. Ten minutes is far longer than any real flow.
+    watchdog = window.setTimeout(function () {
+      if (running) {
+        showSignupError(button, "The Facebook dialog was still open after ten minutes. Start again from the Connect WhatsApp button.");
+      }
+    }, 10 * 60 * 1000);
   }
 
   function findConnectButton() {
@@ -262,18 +296,16 @@
     startSignup(button);
   });
 
-  // Ask for the state up front so the click only has to open a window.
+  // Get the state and the SDK in place before anyone clicks, so the click itself
+  // has nothing left to wait for.
   function prepare() {
     var button = findConnectButton();
     if (!button) {
       return;
     }
     warmUp(button);
-    button.addEventListener("pointerenter", function () {
-      warmUp(button);
-    });
-    button.addEventListener("focus", function () {
-      warmUp(button);
+    loadSDK(button).catch(function () {
+      // Reported on the click, where there is a button to report it on.
     });
   }
 
