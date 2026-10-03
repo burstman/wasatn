@@ -304,8 +304,12 @@ func TestGraphBaseURL(t *testing.T) {
 		meta MetaConfig
 		want string
 	}{
-		{name: "default version", meta: MetaConfig{}, want: "https://graph.facebook.com/v21.0"},
-		{name: "explicit version", meta: MetaConfig{GraphVersion: "v22.0"}, want: "https://graph.facebook.com/v22.0"},
+		{name: "default version", meta: MetaConfig{}, want: "https://graph.facebook.com/v25.0"},
+		{name: "explicit version", meta: MetaConfig{GraphVersion: "v26.0"}, want: "https://graph.facebook.com/v26.0"},
+		// The Facebook SDK wants "v25.0" and the REST path tolerates "25.0", so a
+		// missing prefix is corrected instead of producing one of each.
+		{name: "prefix added", meta: MetaConfig{GraphVersion: "25.0"}, want: "https://graph.facebook.com/v25.0"},
+		{name: "whitespace trimmed", meta: MetaConfig{GraphVersion: " v26.0 "}, want: "https://graph.facebook.com/v26.0"},
 	}
 
 	for _, tc := range tests {
@@ -314,6 +318,43 @@ func TestGraphBaseURL(t *testing.T) {
 
 			if got := tc.meta.GraphBaseURL(); got != tc.want {
 				t.Errorf("GraphBaseURL() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestGraphVersionSupported(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		meta MetaConfig
+		want bool
+	}{
+		// An unset version means the default, which is supported by definition.
+		{name: "unset uses the default", meta: MetaConfig{}, want: true},
+		{name: "the default itself", meta: MetaConfig{GraphVersion: DefaultGraphVersion}, want: true},
+		{name: "newer", meta: MetaConfig{GraphVersion: "v26.0"}, want: true},
+		{name: "much newer", meta: MetaConfig{GraphVersion: "v99.0"}, want: true},
+		// v21 predates Embedded Signup v4, which Meta refuses on these versions.
+		{name: "older", meta: MetaConfig{GraphVersion: "v21.0"}, want: false},
+		{name: "much older", meta: MetaConfig{GraphVersion: "v19.0"}, want: false},
+		// The prefix is optional on input; Version normalises it.
+		{name: "missing the v prefix", meta: MetaConfig{GraphVersion: "25.0"}, want: true},
+		{name: "padded with spaces", meta: MetaConfig{GraphVersion: "  v25.0  "}, want: true},
+		// These cannot be compared at all, so the operator is told rather than
+		// left guessing why signup fails.
+		{name: "no minor segment", meta: MetaConfig{GraphVersion: "v25"}, want: false},
+		{name: "not a number", meta: MetaConfig{GraphVersion: "vNext"}, want: false},
+		{name: "empty", meta: MetaConfig{GraphVersion: ""}, want: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := tc.meta.GraphVersionSupported(); got != tc.want {
+				t.Errorf("GraphVersionSupported() = %v, want %v", got, tc.want)
 			}
 		})
 	}

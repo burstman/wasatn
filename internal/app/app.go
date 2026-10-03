@@ -19,6 +19,7 @@ import (
 	"github.com/burstman/wasatn/internal/httpx"
 	"github.com/burstman/wasatn/internal/jobs"
 	"github.com/burstman/wasatn/internal/web"
+	"github.com/burstman/wasatn/internal/webhooks"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -32,14 +33,15 @@ const (
 
 // App holds the dependencies shared by the HTTP handlers.
 type App struct {
-	Config  *config.Config
-	Log     *slog.Logger
-	Pool    *pgxpool.Pool
-	Queries *sqlc.Queries
-	Session *auth.Session
-	CSRF    *httpx.CSRF
-	Auth    *auth.Handlers
-	Jobs    *jobs.Client
+	Config   *config.Config
+	Log      *slog.Logger
+	Pool     *pgxpool.Pool
+	Queries  *sqlc.Queries
+	Session  *auth.Session
+	CSRF     *httpx.CSRF
+	Auth     *auth.Handlers
+	Jobs     *jobs.Client
+	Webhooks *webhooks.Handler
 
 	staticFS  http.FileSystem
 	authLimit *httpx.Limiter
@@ -62,7 +64,8 @@ func New(cfg *config.Config, log *slog.Logger, pool *pgxpool.Pool) (*App, error)
 	)
 
 	csrf := httpx.NewCSRF(session.Manager(), cfg.Production())
-	service := auth.NewService(db.NewQueries(pool), auth.BcryptCost, log)
+	queries := db.NewQueries(pool)
+	service := auth.NewService(queries, auth.BcryptCost, log)
 
 	jobClient, err := jobs.NewClient(pool, &cfg.River, nil, log.With("component", "river"))
 	if err != nil {
@@ -73,11 +76,12 @@ func New(cfg *config.Config, log *slog.Logger, pool *pgxpool.Pool) (*App, error)
 		Config:    cfg,
 		Log:       log,
 		Pool:      pool,
-		Queries:   db.NewQueries(pool),
+		Queries:   queries,
 		Session:   session,
 		CSRF:      csrf,
 		Auth:      auth.NewHandlers(service, session, csrf, log.With("component", "auth")),
 		Jobs:      jobClient,
+		Webhooks:  webhooks.New(queries, cfg.Meta.AppSecret, cfg.Meta.VerifyToken, log),
 		staticFS:  staticFS,
 		authLimit: httpx.NewLimiter(AuthRateLimitAttempts, AuthRateLimitWindow),
 	}, nil
@@ -91,6 +95,10 @@ func (a *App) Router() http.Handler {
 	r.Use(httpx.NewLogger(a.Log, a.Config.TrustProxy).Middleware)
 	// CSRF middleware also loads the session, since verifying the token needs it.
 	r.Use(a.CSRF.Middleware)
+
+	// Meta's webhook is public by necessity: it is authenticated by an HMAC
+	// signature over the body, and the CSRF middleware skips it explicitly.
+	a.Webhooks.Routes(r)
 
 	r.Method(http.MethodGet, "/healthz", http.HandlerFunc(a.health))
 	r.Handle("/static/*", http.StripPrefix("/static/", http.FileServer(a.staticFS)))

@@ -10,11 +10,11 @@ and [River](https://riverqueue.com) for the job queue.
 
 ## Status
 
-Milestone 1 of the roadmap in [PROMPT.md](PROMPT.md) is implemented: the app
-skeleton, PostgreSQL schema, email/password authentication, sessions, CSRF,
-rate limiting, the base UI, and the worker entrypoint. Later milestones
-(connections, templates, contacts, campaigns, analytics) are not built yet, and
-their navigation entries are deliberately disabled.
+Milestones 1 and 2 of the roadmap in [PROMPT.md](PROMPT.md) are implemented: the
+app skeleton, PostgreSQL schema, email/password authentication, sessions, CSRF,
+rate limiting, the base UI, the worker entrypoint, and Meta's webhook endpoint.
+Later milestones (Embedded Signup, templates, contacts, campaigns, analytics) are
+not built yet, and their navigation entries are deliberately disabled.
 
 ## Requirements
 
@@ -72,9 +72,42 @@ internal/httpx    CSRF, rate limiting, logging, JSON and error responses
 internal/jobs     River client and worker wiring
 internal/phone    E.164 validation and masking
 internal/web      templ components and page views
+internal/webhooks Meta webhook signature, challenge, and event handlers
 migrations        paired up/down SQL migrations
 static            CSS, vendored htmx and Alpine
 ```
+
+## Meta webhooks
+
+The app exposes `GET` and `POST /webhooks/whatsapp`, the callback URL you
+configure on the WhatsApp product in the Meta app dashboard. Point it at the
+public origin of your deployment, for example `https://wasatn.onrender.com/webhooks/whatsapp`.
+
+`GET` answers Meta's subscription challenge by comparing `hub.verify_token` with
+`META_VERIFY_TOKEN` and echoing `hub.challenge`. `POST` verifies the
+`X-Hub-Signature-256` HMAC over the raw body with `META_APP_SECRET` before
+anything is parsed or written, then routes each change by its field:
+
+| Field | Effect |
+| --- | --- |
+| `messages` | Advances `message_logs` through sent → delivered → read → failed, with Meta's error code and detail on a failure. Inbound customer messages are acknowledged but not yet answered. |
+| `account_update` | A removal disconnects the connection and pauses its `draft`, `scheduled` and `sending` campaigns. |
+| `message_template_status_update` | Records the review status (`pending`, `approved`, `rejected`, `paused`) and rejection reason. |
+
+Status transitions are monotonic and idempotent: a redelivered webhook, or a
+`delivered` that arrives after `read`, changes nothing. Unknown fields, unknown
+statuses and unknown `account_update` events are ignored so a Meta change cannot
+break processing. A status for a message we never sent is answered 200, because
+any other status makes Meta redeliver the same payload for days.
+
+The endpoint is public by necessity and is exempt from CSRF for that reason; it
+is authenticated by the HMAC signature instead. Requests with a missing or
+malformed signature get 401, a bad signature 403, and an undecodable payload 400.
+
+Subscribe to the `messages`, `message_template_status_update` and
+`account_update` fields in the dashboard. The webhook needs
+`META_APP_SECRET` and `META_VERIFY_TOKEN` to be set; without them every delivery
+is rejected.
 
 ## Database
 

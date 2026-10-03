@@ -36,10 +36,22 @@ type MetaConfig struct {
 	AppID       string
 	AppSecret   string
 	VerifyToken string
-	// GraphVersion is the Cloud API version segment, e.g. "v21.0". Callers build
+	// GraphVersion is the Cloud API version segment, e.g. "v25.0". Callers build
 	// URLs as https://graph.facebook.com/<GraphVersion>/...
 	GraphVersion string
 }
+
+// DefaultGraphVersion is the Cloud API version the app targets.
+//
+// It is pinned rather than tracking the newest release on purpose: a pinned
+// version keeps Graph responses stable between deploys, and it is the version
+// Meta's Embedded Signup v4 documentation is written against. Embedded Signup v4
+// is required because v2 and v3 stop working on October 15, 2026, and v4 allows
+// a business to finish onboarding without a verified phone number, which is why
+// connections can carry the pending_phone status.
+//
+// Raise it deliberately, then re-run the signup flow against the live API.
+const DefaultGraphVersion = "v25.0"
 
 // MetaConfigured reports whether Embedded Signup can be offered. Until it is,
 // the connections page shows a setup notice instead of a broken button.
@@ -47,13 +59,47 @@ func (m MetaConfig) MetaConfigured() bool {
 	return m.AppID != "" && m.AppSecret != ""
 }
 
+// Version returns the configured Cloud API version in the form Meta expects,
+// which is "v25.0". An unset value falls back to DefaultGraphVersion, and a
+// missing "v" is added so the same value can be handed to both the Facebook SDK
+// and the REST URL without one of them being wrong.
+func (m MetaConfig) Version() string {
+	version := strings.TrimSpace(m.GraphVersion)
+	if version == "" {
+		return DefaultGraphVersion
+	}
+	if !strings.HasPrefix(version, "v") {
+		version = "v" + version
+	}
+	return version
+}
+
 // GraphBaseURL is the Cloud API root for the configured version.
 func (m MetaConfig) GraphBaseURL() string {
-	version := m.GraphVersion
-	if version == "" {
-		version = "v21.0"
+	return "https://graph.facebook.com/" + m.Version()
+}
+
+// GraphVersionSupported reports whether the configured version is at least the
+// one Embedded Signup v4 is documented against. Anything older is refused by
+// Meta, so it is worth a startup warning rather than a failed signup click.
+func (m MetaConfig) GraphVersionSupported() bool {
+	version := m.Version()
+
+	major, _, found := strings.Cut(strings.TrimPrefix(version, "v"), ".")
+	if !found {
+		return false
 	}
-	return "https://graph.facebook.com/" + version
+	n, err := strconv.Atoi(major)
+	if err != nil {
+		return false
+	}
+
+	want, _, _ := strings.Cut(strings.TrimPrefix(DefaultGraphVersion, "v"), ".")
+	minimum, err := strconv.Atoi(want)
+	if err != nil {
+		return true // the default itself is unparseable; do not nag
+	}
+	return n >= minimum
 }
 
 // RiverConfig tunes the job worker.
@@ -138,7 +184,7 @@ func Load() (*Config, error) {
 			AppID:        os.Getenv("META_APP_ID"),
 			AppSecret:    os.Getenv("META_APP_SECRET"),
 			VerifyToken:  os.Getenv("META_VERIFY_TOKEN"),
-			GraphVersion: getenv("META_GRAPH_VERSION", "v21.0"),
+			GraphVersion: getenv("META_GRAPH_VERSION", DefaultGraphVersion),
 		},
 		CronSecret:         os.Getenv("CRON_SECRET"),
 		SessionCookieName:  getenv("SESSION_COOKIE_NAME", "wasatn_session"),

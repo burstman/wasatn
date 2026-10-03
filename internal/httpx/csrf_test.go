@@ -170,6 +170,62 @@ func TestCSRFTokenFromRequest(t *testing.T) {
 	}
 }
 
+// TestCSRFExemptPath covers Meta's webhook, which cannot present a session token
+// because it has no session: the delivery is authenticated by its HMAC signature
+// instead. The exemption is per exact path, so it must not leak to anything else.
+func TestCSRFExemptPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+		wantNext   bool
+	}{
+		{name: "webhook POST allowed without token", path: "/webhooks/whatsapp", wantStatus: http.StatusNoContent, wantNext: true},
+		{name: "webhook GET allowed without token", path: "/webhooks/whatsapp", wantStatus: http.StatusNoContent, wantNext: true},
+		{name: "other path still rejected", path: "/logout", wantStatus: http.StatusForbidden, wantNext: false},
+		{name: "prefix is not exempt", path: "/webhooks/whatsapp/extra", wantStatus: http.StatusForbidden, wantNext: false},
+		{name: "parent path is not exempt", path: "/webhooks", wantStatus: http.StatusForbidden, wantNext: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			csrf := NewCSRF(newCSRFSession(), false)
+
+			reached := false
+			handler := csrf.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				reached = true
+				w.WriteHeader(http.StatusNoContent)
+			}))
+
+			method := http.MethodPost
+			if strings.HasSuffix(tc.name, "GET allowed without token") {
+				method = http.MethodGet
+			}
+
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, httptest.NewRequest(method, tc.path, strings.NewReader("")))
+
+			if rec.Code != tc.wantStatus {
+				t.Errorf("status = %d, want %d (body %q)", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if reached != tc.wantNext {
+				t.Errorf("next handler reached = %v, want %v", reached, tc.wantNext)
+			}
+			// An exempt endpoint hands out no session cookie, so a webhook delivery
+			// never creates a session row.
+			if tc.wantNext && tc.path == "/webhooks/whatsapp" {
+				if got := cookieValue(rec.Result().Cookies(), CSRFCookieName); got != "" {
+					t.Errorf("csrf cookie = %q, want none on a webhook response", got)
+				}
+			}
+		})
+	}
+}
+
 func cookieValue(cookies []*http.Cookie, name string) string {
 	for _, c := range cookies {
 		if c.Name == name {

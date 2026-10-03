@@ -2,7 +2,9 @@ version: "2"
 sql:
   - engine: "postgresql"
     schema: "migrations"
-    queries: "internal/auth/queries"
+    queries:
+      - internal/auth/queries
+      - internal/webhooks/queries
     gen:
       go:
         package: "sqlc"

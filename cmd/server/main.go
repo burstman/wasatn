@@ -39,6 +39,23 @@ func run() error {
 			"hint", "set META_APP_ID and META_APP_SECRET",
 		)
 	}
+	// Separate warning because a missing app secret and a missing verify token
+	// break different halves of the webhook, and an operator debugging a
+	// rejected delivery needs to know which.
+	if cfg.Meta.AppSecret == "" || cfg.Meta.VerifyToken == "" {
+		log.Warn("the meta webhook rejects every delivery while its credentials are unset",
+			"app_secret_set", cfg.Meta.AppSecret != "",
+			"verify_token_set", cfg.Meta.VerifyToken != "",
+			"hint", "set META_APP_SECRET and META_VERIFY_TOKEN",
+		)
+	}
+	if !cfg.Meta.GraphVersionSupported() {
+		log.Warn("the configured cloud api version is older than embedded signup v4 requires",
+			"configured", cfg.Meta.Version(),
+			"recommended", config.DefaultGraphVersion,
+			"hint", "raise META_GRAPH_VERSION, or signup will be refused by Meta",
+		)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

@@ -1,0 +1,38 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "102900000000001",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_account_id": "102900000000001",
+            "metadata": {
+              "display_phone_number": "15550100200",
+              "phone_number_id": "552100000000001"
+            },
+            "statuses": [
+              {
+                "id": "wamid.HBgLMzQ2NzgVNRQyODcyMDNG0IR1QUY2NTVDMzE1NDcxMzUrMDNGQUJDMA",
+                "recipient_id": "15550100199",
+                "status": "failed",
+                "timestamp": "1767225600",
+                "errors": [
+                  {
+                    "code": 131047,
+                    "title": "Re-engagement message",
+                    "message": "Message failed to send because more than 24 hours have passed",
+                    "error_data": {
+                      "details": "Message failed to send because more than 24 hours have passed."
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "102900000000001",
+      "changes": [
+        {
+          "field": "message_template_status_update",
+          "value": {
+            "event": "REJECTED",
+            "message_template_id": "1234567890",
+            "message_template_name": "order_confirmation",
+            "reason": "Template name does not follow the alphanumeric_and_underscore format.",
+            "language": "en_US"
+          }
+        }
+      ]
+    }
+  ]
+}

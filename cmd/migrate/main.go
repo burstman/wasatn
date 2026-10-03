@@ -60,12 +60,12 @@ func run() error {
 
 	switch command {
 	case "up":
-		if err := migrateApp(cfg.DatabaseURL, func(m *migrate.Migrate) error { return m.Up() }); err != nil {
+		if err := migrateApp(cfg.DatabaseURL, "applied", func(m *migrate.Migrate) error { return m.Up() }); err != nil {
 			return err
 		}
 		return migrateRiver(ctx, pool)
 	case "down":
-		return migrateApp(cfg.DatabaseURL, func(m *migrate.Migrate) error { return m.Down() })
+		return migrateApp(cfg.DatabaseURL, "rolled back", func(m *migrate.Migrate) error { return m.Down() })
 	case "version":
 		version, dirty, err := appVersion(cfg.DatabaseURL)
 		if err != nil {
@@ -103,7 +103,9 @@ func migrateURL(databaseURL string) string {
 }
 
 // migrateApp applies WasaTN's own migrations from the migrations/ directory.
-func migrateApp(databaseURL string, direction func(*migrate.Migrate) error) error {
+// The verb ("applied" or "rolled back") is only reported when the version
+// actually moved, so a silent no-op is never mistaken for real work.
+func migrateApp(databaseURL, verb string, direction func(*migrate.Migrate) error) error {
 	path, err := migrationsDir()
 	if err != nil {
 		return err
@@ -119,8 +121,20 @@ func migrateApp(databaseURL string, direction func(*migrate.Migrate) error) erro
 		_, _ = m.Close()
 	}()
 
-	if err := direction(m); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+	before, _, _ := m.Version()
+
+	err = direction(m)
+	if err != nil && !errors.Is(err, migrate.ErrNoChange) {
 		return fmt.Errorf("apply migrations: %w", err)
+	}
+
+	after, dirty, versionErr := m.Version()
+	if versionErr != nil && !errors.Is(versionErr, migrate.ErrNilVersion) {
+		return fmt.Errorf("read migration version: %w", versionErr)
+	}
+	if err == nil && after != before {
+		fmt.Printf("app migrations: version %d %s (dirty: %v)\n", after, verb, dirty)
+		return nil
 	}
 	fmt.Println("app migrations: up to date")
 	return nil

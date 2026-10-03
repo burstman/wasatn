@@ -1,0 +1,17 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "102900000000001",
+      "changes": [
+        {
+          "field": "account_update",
+          "value": {
+            "event": "PARTNER_REMOVED",
+            "phone_number_id": "552100000000001"
+          }
+        }
+      ]
+    }
+  ]
+}

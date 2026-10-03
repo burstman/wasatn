@@ -66,6 +66,7 @@ const (
 	ConnectionStatusActive       ConnectionStatus = "active"
 	ConnectionStatusDisconnected ConnectionStatus = "disconnected"
 	ConnectionStatusTokenExpired ConnectionStatus = "token_expired"
+	ConnectionStatusPendingPhone ConnectionStatus = "pending_phone"
 )
 
 func (e *ConnectionStatus) Scan(src interface{}) error {
@@ -359,8 +360,8 @@ type Connection struct {
 	UserID               uuid.UUID        `json:"user_id"`
 	MessagingAccountID   string           `json:"messaging_account_id"`
 	WaacID               *string          `json:"waac_id"`
-	PhoneNumberID        string           `json:"phone_number_id"`
-	PhoneNumber          string           `json:"phone_number"`
+	PhoneNumberID        *string          `json:"phone_number_id"`
+	PhoneNumber          *string          `json:"phone_number"`
 	DisplayName          string           `json:"display_name"`
 	AccessTokenEncrypted []byte           `json:"access_token_encrypted"`
 	TokenExpiresAt       time.Time        `json:"token_expires_at"`
@@ -396,6 +397,12 @@ type MessageLog struct {
 	DeliveredAt  pgtype.Timestamptz `json:"delivered_at"`
 	ReadAt       pgtype.Timestamptz `json:"read_at"`
 	FailedAt     pgtype.Timestamptz `json:"failed_at"`
+}
+
+type Session struct {
+	Token  string    `json:"token"`
+	Data   []byte    `json:"data"`
+	Expiry time.Time `json:"expiry"`
 }
 
 type Template struct {

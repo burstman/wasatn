@@ -86,6 +86,13 @@ func (c *CSRF) Middleware(next http.Handler) http.Handler {
 // ones.
 func (c *CSRF) check(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if csrfExempt(r.URL.Path) {
+			// These endpoints authenticate themselves and have no session, so
+			// there is no token to check and no cookie to hand out.
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		token := c.Token(r)
 
 		if !isSafeMethod(r.Method) {
@@ -106,6 +113,20 @@ func (c *CSRF) check(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// csrfExemptPaths are endpoints that cannot present a CSRF token.
+//
+// Meta's webhook delivery is authenticated by an HMAC signature over the raw
+// body instead, and its subscription challenge by a shared verify token. Listing
+// exact paths rather than a prefix keeps this from silently exempting a future
+// state-changing route.
+var csrfExemptPaths = map[string]bool{
+	"/webhooks/whatsapp": true,
+}
+
+func csrfExempt(path string) bool {
+	return csrfExemptPaths[path]
 }
 
 func (c *CSRF) cookie(token string) *http.Cookie {
