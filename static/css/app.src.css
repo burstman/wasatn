@@ -1,0 +1,30 @@
+@import "tailwindcss";
+
+@plugin "daisyui" {
+  themes: corporate --default, dark --prefersdark;
+}
+
+/* HTMX: suppress flicker on swap */
+[hx-indicator] {
+  opacity: 0;
+  transition: opacity 150ms ease-in;
+}
+
+.htmx-request [hx-indicator] {
+  opacity: 1;
+}
+
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}
+
+/* Alpine: hide x-cloak content until Alpine initialises */
+[x-cloak] {
+  display: none !important;
+}
+
+/* Phone number rendering: keep digit groups from wrapping mid-number */
+.phone {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

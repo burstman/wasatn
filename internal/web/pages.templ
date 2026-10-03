@@ -1,0 +1,192 @@
+package web
+
+import "fmt"
+
+// LoginPage renders the sign-in form.
+templ LoginPage(p PageData, f AuthForm) {
+	@Layout(p) {
+		@CenteredCard("Sign in", "Connect a WhatsApp number and start sending.") {
+			<form
+				method="post"
+				action="/login"
+				class="flex flex-col gap-3"
+				hx-post="/login"
+				hx-target="#auth-form"
+				hx-swap="outerHTML"
+				hx-indicator="#auth-spinner"
+			>
+				@AuthFormFields(p, f)
+			</form>
+			<p class="mt-4 text-center text-sm opacity-70">
+				No account yet?
+				<a class="link link-primary" href="/register">Create one</a>
+			</p>
+		}
+	}
+}
+
+// RegisterPage renders the sign-up form.
+templ RegisterPage(p PageData, f AuthForm) {
+	@Layout(p) {
+		@CenteredCard("Create your account", "Start your free plan. No card required.") {
+			<form
+				method="post"
+				action="/register"
+				class="flex flex-col gap-3"
+				hx-post="/register"
+				hx-target="#auth-form"
+				hx-swap="outerHTML"
+				hx-indicator="#auth-spinner"
+			>
+				@AuthFormFields(p, f)
+			</form>
+			<p class="mt-4 text-center text-sm opacity-70">
+				Already registered?
+				<a class="link link-primary" href="/login">Sign in</a>
+			</p>
+		}
+	}
+}
+
+// AuthFormFields is swapped in place on validation failure so the user keeps
+// what they typed.
+templ AuthFormFields(p PageData, f AuthForm) {
+	<div id="auth-form" class="flex flex-col gap-3">
+		// The token is carried in the form, not only by the HTMX header hook in
+		// static/js/app.js, so signing in still works with JavaScript disabled.
+		<input type="hidden" name="csrf_token" value={ p.CSRFToken }/>
+		if f.Errors["form"] != "" {
+			<div class="alert alert-error text-sm" role="alert">
+				<span>{ f.Errors["form"] }</span>
+			</div>
+		}
+		<label class="form-control w-full">
+			<div class="label"><span class="label-text">Email</span></div>
+			<input
+				type="email"
+				name="email"
+				value={ f.Email }
+				autocomplete="email"
+				required
+				class={ ClassIf("input input-bordered w-full", f.Errors["email"] != "", "input-error") }
+				placeholder="you@example.com"
+			/>
+			if f.Errors["email"] != "" {
+				<div class="label"><span class="label-text-alt text-error">{ f.Errors["email"] }</span></div>
+			}
+		</label>
+		<label class="form-control w-full">
+			<div class="label"><span class="label-text">Password</span></div>
+			<input
+				type="password"
+				name="password"
+				autocomplete={ f.PasswordAutocomplete }
+				required
+				minlength="10"
+				class={ ClassIf("input input-bordered w-full", f.Errors["password"] != "", "input-error") }
+			/>
+			if f.Errors["password"] != "" {
+				<div class="label"><span class="label-text-alt text-error">{ f.Errors["password"] }</span></div>
+			}
+		</label>
+		<button type="submit" class={ ClassIf("btn btn-primary mt-2", p.CSRFToken == "", "btn-disabled") }>
+			{ f.Submit }
+			<span id="auth-spinner" class="loading loading-spinner loading-sm" hx-indicator>
+				<span class="sr-only">Loading</span>
+			</span>
+		</button>
+	</div>
+}
+
+// ErrorPage renders a failure. It is the target of the central error handler.
+templ ErrorPage(p PageData, e ErrorView) {
+	@Layout(p) {
+		<div class="flex flex-col items-center justify-center py-20 text-center">
+			<div class="text-6xl font-bold opacity-20">{ StatusText(e.Status) }</div>
+			<h1 class="mt-4 text-2xl font-semibold">{ e.Title }</h1>
+			if e.Detail != "" {
+				<p class="mt-2 max-w-md opacity-70">{ e.Detail }</p>
+			}
+			if e.RequestID != "" {
+				<p class="mt-6 text-xs opacity-50">Request ID: { e.RequestID }</p>
+			}
+			<a href="/dashboard" class="btn btn-primary mt-8">Back to dashboard</a>
+		</div>
+	}
+}
+
+// DashboardPage is the landing page.
+templ DashboardPage(p PageData, connections int, campaigns int) {
+	@Layout(p) {
+		<div class="flex flex-col gap-6">
+			<div>
+				<h1 class="text-2xl font-bold">Dashboard</h1>
+				<p class="opacity-70">Send and track WhatsApp campaigns.</p>
+			</div>
+			<div class="grid gap-4 sm:grid-cols-2">
+				<div class="card bg-base-100 shadow-sm">
+					<div class="card-body">
+						<div class="text-sm opacity-70">WhatsApp numbers</div>
+						<div class="text-3xl font-bold">{ fmt.Sprintf("%d", connections) }</div>
+						<div class="card-actions mt-2">
+							<a href="/connections" class="btn btn-sm btn-primary">Connect a number</a>
+						</div>
+					</div>
+				</div>
+				<div class="card bg-base-100 shadow-sm">
+					<div class="card-body">
+						<div class="text-sm opacity-70">Campaigns</div>
+						<div class="text-3xl font-bold">{ fmt.Sprintf("%d", campaigns) }</div>
+						<div class="card-actions mt-2">
+							<a href="/campaigns" class="btn btn-sm">View campaigns</a>
+						</div>
+					</div>
+				</div>
+			</div>
+			@MilestonePlaceholder(EmptyView{
+				Title:       "Templates and campaigns",
+				Description: "Create a UTILITY template, validate it, then send it to your contacts on a schedule.",
+				Milestone:   "Milestones 4 to 6",
+			})
+		</div>
+	}
+}
+
+// ConnectionsPage lists WhatsApp connections.
+templ ConnectionsPage(p PageData, metaConfigured bool) {
+	@Layout(p) {
+		<div class="flex flex-col gap-6">
+			<div class="flex flex-wrap items-center justify-between gap-3">
+				<div>
+					<h1 class="text-2xl font-bold">WhatsApp connections</h1>
+					<p class="opacity-70">Connect your own Business number via Meta Embedded Signup.</p>
+				</div>
+				if metaConfigured {
+					<button type="button" class="btn btn-primary" id="connect-whatsapp" disabled>Connect WhatsApp</button>
+				}
+			</div>
+			if !metaConfigured {
+				<div class="alert alert-info shadow-sm">
+					<span>Meta Embedded Signup is not configured yet. Set META_APP_ID and META_APP_SECRET to enable it.</span>
+				</div>
+			}
+			@MilestonePlaceholder(EmptyView{
+				Title:       "No connections yet",
+				Description: "The Embedded Signup flow lands in milestone 3. This page will list each connected number with its token status, quality rating and messaging limit.",
+				Milestone:   "Milestone 3",
+			})
+		</div>
+	}
+}
+
+// MilestonePlaceholder keeps unbuilt features honest instead of showing a dead
+// button.
+templ MilestonePlaceholder(e EmptyView) {
+	<div class="card border border-dashed border-base-300 bg-base-100">
+		<div class="card-body items-center text-center">
+			<h2 class="card-title">{ e.Title }</h2>
+			<p class="max-w-xl text-sm opacity-70">{ e.Description }</p>
+			<span class="badge badge-outline">{ e.Milestone }</span>
+		</div>
+	</div>
+}

@@ -1,0 +1,91 @@
+package web
+
+// Layout is the full HTML document every page renders inside.
+templ Layout(p PageData) {
+	<!DOCTYPE html>
+	<html lang="en" data-theme="corporate">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>{ p.PageTitle() }</title>
+			<link rel="stylesheet" href="/static/css/app.css"/>
+			<meta name="csrf-token" content={ p.CSRFToken }/>
+			<script src="/static/vendor/htmx.min.js" defer></script>
+			<script src="/static/vendor/alpine.min.js" defer></script>
+			<script src="/static/js/app.js" defer></script>
+		</head>
+		<body class="min-h-screen bg-base-200 text-base-content">
+			if p.User != nil {
+				@navbar(p)
+			}
+			<main class="mx-auto w-full max-w-6xl px-4 py-8">
+				@flash(p)
+				{ children... }
+			</main>
+		</body>
+	</html>
+}
+
+// navbar is only rendered for signed-in users.
+templ navbar(p PageData) {
+	<header class="navbar bg-base-100 shadow-sm">
+		<div class="flex-1 gap-2">
+			<a href="/dashboard" class="btn btn-ghost text-lg font-bold">WasaTN</a>
+			<nav class="flex gap-1">
+				<a href="/dashboard" class="btn btn-ghost btn-sm">Dashboard</a>
+				<a href="/connections" class="btn btn-ghost btn-sm">Connections</a>
+				// Templates, campaigns and contacts land in later milestones.
+				// They are rendered as disabled rather than linked so no
+				// navigation leads to a 404.
+				<span class="btn btn-ghost btn-sm btn-disabled" aria-disabled="true" title="Coming soon">Templates</span>
+				<span class="btn btn-ghost btn-sm btn-disabled" aria-disabled="true" title="Coming soon">Campaigns</span>
+				<span class="btn btn-ghost btn-sm btn-disabled" aria-disabled="true" title="Coming soon">Contacts</span>
+			</nav>
+		</div>
+		<div class="flex-none" x-data="{ open: false }">
+			<button type="button" class="btn btn-ghost btn-sm" @click="open = !open" @keydown.escape.window="open = false">
+				<span class="hidden sm:inline">{ p.User.Email }</span>
+				<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+					<path fill-rule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.19l3.71-3.96a.75.75 0 111.08 1.04l-4.25 4.53a.75.75 0 01-1.08 0L5.21 8.27a.75.75 0 01.02-1.06z" clip-rule="evenodd"/>
+				</svg>
+			</button>
+			<div x-show="open" x-cloak @click.outside="open = false" class="absolute right-4 z-20 mt-2 w-56 rounded-box border border-base-300 bg-base-100 p-2 shadow-lg">
+				<div class="px-3 py-2 text-xs uppercase opacity-60">Signed in as</div>
+				<div class="px-3 pb-2 text-sm font-medium break-all">{ p.User.Email }</div>
+				<div class="px-3 pb-2">
+					<span class="badge badge-outline badge-sm">{ p.User.Plan } plan</span>
+				</div>
+				<form method="post" action="/logout">
+					<input type="hidden" name="csrf_token" value={ p.CSRFToken }/>
+					<button type="submit" class="btn btn-ghost btn-sm w-full justify-start">Sign out</button>
+				</form>
+			</div>
+		</div>
+	</header>
+}
+
+templ flash(p PageData) {
+	if p.Flash != nil {
+		<div class={ "alert", "alert-" + p.Flash.AlertKind(), "mb-6", "shadow-sm" } role="status">
+			<span>{ p.Flash.Message }</span>
+		</div>
+	}
+}
+
+// CenteredCard is the layout used by the auth pages.
+templ CenteredCard(title, subtitle string) {
+	<div class="flex min-h-screen items-center justify-center bg-base-200 px-4">
+		<div class="card w-full max-w-md bg-base-100 shadow-xl">
+			<div class="card-body">
+				<div class="mb-2 text-center">
+					<div class="text-2xl font-bold">WasaTN</div>
+					<h1 class="text-lg font-medium">{ title }</h1>
+					if subtitle != "" {
+						<p class="mt-1 text-sm opacity-70">{ subtitle }</p>
+					}
+				</div>
+				{ children... }
+			</div>
+		</div>
+	</div>
+}

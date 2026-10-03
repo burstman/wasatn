@@ -1,0 +1,25 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  # Run the web server on changes. The worker has its own config so the two
+  # processes restart independently.
+  bin = "tmp/server"
+  cmd = "go build -o tmp/server ./cmd/server"
+  delay = 300
+  stop_on_error = false
+  send_interrupt = true
+  kill_delay = 2s
+  include_ext = ["go", "templ"]
+  exclude_dir = ["bin", "tmp", "static", "migrations", "node_modules"]
+  exclude_regex = ["_test\\.go$"]
+
+[log]
+  time = true
+
+[misc]
+  clean_on_exit = true
+
+[screen]
+  clear_on_rebuild = true
+  keep_scroll = true

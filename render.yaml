@@ -1,0 +1,63 @@
+# Render blueprint for WasaTN.
+#
+# Deploy with: New > Blueprint, point it at this repo, then fill in the secret
+# values it asks for. Database migrations are NOT run automatically: the Neon
+# schema is already at version 2, so run `make migrate` locally when the
+# schema changes.
+#
+# Generated secrets on a POSIX machine:
+#   SESSION_SECRET=$(openssl rand -hex 32)
+#   TOKEN_ENCRYPTION_KEY=$(openssl rand -hex 32)
+#   CRON_SECRET=$(openssl rand -hex 32)
+
+services:
+  - type: web
+    name: wasatn
+    runtime: go
+    plan: free
+    region: oregon
+    buildCommand: go build -o /tmp/server ./cmd/server
+    startCommand: /tmp/server
+    healthCheckPath: /healthz
+    # The Go version comes from .go-version so a Render image change cannot
+    # silently downgrade the build below River's 1.26 requirement.
+    envVars:
+      - key: SUPERKIT_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "true" # Render terminates TLS and sets X-Forwarded-Proto
+      - key: PUBLIC_BASE_URL
+        fromService:
+          type: web
+          name: wasatn
+          property: host
+      - key: SESSION_COOKIE_NAME
+        value: wasatn_session
+      - key: META_GRAPH_VERSION
+        value: v21.0
+      - key: DATABASE_URL
+        sync: false # Neon connection string
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: TOKEN_ENCRYPTION_KEY
+        generateValue: true
+      - key: CRON_SECRET
+        generateValue: true
+      - key: META_APP_ID
+        sync: false # until M2, leave empty: the app warns and disables signup
+      - key: META_APP_SECRET
+        sync: false
+      - key: META_VERIFY_TOKEN
+        sync: false
+
+  # Uncomment when campaign jobs land (milestone 5). Render Background Workers
+  # need a paid plan, so keep this commented while the queue is empty: the
+  # worker exits immediately with "no job kinds are registered yet".
+  # - type: worker
+  #   name: wasatn-worker
+  #   runtime: go
+  #   plan: starter
+  #   region: oregon
+  #   buildCommand: go build -o /tmp/worker ./cmd/worker
+  #   startCommand: /tmp/worker
+  #   envVars: ...

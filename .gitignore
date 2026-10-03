@@ -1,0 +1,23 @@
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+
+# Build output
+/bin/
+/dist/
+/tmp/
+coverage.out
+
+# NOTE: static/css/app.css and static/vendor/* are generated but intentionally
+# committed. assets.go embeds static/ so `go build` works on a fresh clone
+# without a Node toolchain. Regenerate with `make css` and `make vendor`.
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/

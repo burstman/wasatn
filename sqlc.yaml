@@ -1,0 +1,26 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "migrations"
+    queries: "internal/auth/queries"
+    gen:
+      go:
+        package: "sqlc"
+        out: "internal/db/sqlc"
+        sql_package: "pgx/v5"
+        emit_json_tags: true
+        emit_empty_slices: true
+        emit_pointers_for_null_types: true
+
+# Native Go types keep the domain layer free of pgtype plumbing.
+# - uuid   -> uuid.UUID (zero UUID means "absent")
+# - text   -> *string when the column is nullable (emit_pointers_for_null_types)
+# - timestamptz -> time.Time; nullable timestamps keep pgtype.Timestamptz so that
+#   SQL NULL is never confused with the zero time.
+overrides:
+  go:
+    overrides:
+      - db_type: "uuid"
+        go_type: "github.com/google/uuid.UUID"
+      - db_type: "timestamptz"
+        go_type: "time.Time"
