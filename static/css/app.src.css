@@ -4,13 +4,17 @@
   themes: corporate --default, dark --prefersdark;
 }
 
-/* HTMX: suppress flicker on swap */
-[hx-indicator] {
+/* HTMX: keep a spinner hidden until its request starts.
+   Target the class htmx adds to the indicator itself, never the hx-indicator
+   attribute: that attribute also sits on the triggering element (the form or
+   button carrying hx-indicator="#..."), and styling by attribute hid the whole
+   login and registration form. */
+.htmx-indicator {
   opacity: 0;
   transition: opacity 150ms ease-in;
 }
 
-.htmx-request [hx-indicator] {
+.htmx-request .htmx-indicator {
   opacity: 1;
 }
 

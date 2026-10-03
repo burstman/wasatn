@@ -91,7 +91,7 @@ templ AuthFormFields(p PageData, f AuthForm) {
 		</label>
 		<button type="submit" class={ ClassIf("btn btn-primary mt-2", p.CSRFToken == "", "btn-disabled") }>
 			{ f.Submit }
-			<span id="auth-spinner" class="loading loading-spinner loading-sm" hx-indicator>
+			<span id="auth-spinner" class="htmx-indicator loading loading-spinner loading-sm">
 				<span class="sr-only">Loading</span>
 			</span>
 		</button>

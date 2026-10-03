@@ -368,7 +368,7 @@ func AuthFormFields(p PageData, f AuthForm) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, " <span id=\"auth-spinner\" class=\"loading loading-spinner loading-sm\" hx-indicator><span class=\"sr-only\">Loading</span></span></button></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 24, " <span id=\"auth-spinner\" class=\"htmx-indicator loading loading-spinner loading-sm\"><span class=\"sr-only\">Loading</span></span></button></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
