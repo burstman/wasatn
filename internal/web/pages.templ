@@ -152,8 +152,8 @@ templ DashboardPage(p PageData, connections int, campaigns int) {
 	}
 }
 
-// ConnectionsPage lists WhatsApp connections.
-templ ConnectionsPage(p PageData, metaConfigured bool) {
+// ConnectionsPage lists WhatsApp connections and hosts the signup button.
+templ ConnectionsPage(p PageData, v ConnectionsView) {
 	@Layout(p) {
 		<div class="flex flex-col gap-6">
 			<div class="flex flex-wrap items-center justify-between gap-3">
@@ -161,22 +161,94 @@ templ ConnectionsPage(p PageData, metaConfigured bool) {
 					<h1 class="text-2xl font-bold">WhatsApp connections</h1>
 					<p class="opacity-70">Connect your own Business number via Meta Embedded Signup.</p>
 				</div>
-				if metaConfigured {
-					<button type="button" class="btn btn-primary" id="connect-whatsapp" disabled>Connect WhatsApp</button>
+				if v.Signup.Enabled {
+					<button
+						type="button"
+						class="btn btn-primary"
+						id="connect-whatsapp"
+						data-app-id={ v.Signup.AppID }
+						data-config-id={ v.Signup.ConfigID }
+						data-version={ v.Signup.Version }
+						data-redirect-uri={ v.Signup.RedirectURI }
+						data-callback-url="/connections/callback"
+						data-state-url="/connections/signup-state"
+					>
+						Connect WhatsApp
+					</button>
 				}
 			</div>
-			if !metaConfigured {
+			if !v.Signup.Enabled {
 				<div class="alert alert-info shadow-sm">
-					<span>Meta Embedded Signup is not configured yet. Set META_APP_ID and META_APP_SECRET to enable it.</span>
+					<span>Meta Embedded Signup is not configured yet. Set META_APP_ID, META_APP_SECRET and META_FB_CONFIG_ID to enable it.</span>
 				</div>
 			}
-			@MilestonePlaceholder(EmptyView{
-				Title:       "No connections yet",
-				Description: "The Embedded Signup flow lands in milestone 3. This page will list each connected number with its token status, quality rating and messaging limit.",
-				Milestone:   "Milestone 3",
-			})
+			<div id="signup-error" class="alert alert-error hidden shadow-sm" role="alert">
+				<span id="signup-error-message"></span>
+			</div>
+			if len(v.Rows) == 0 {
+				<div class="card border border-dashed border-base-300 bg-base-100">
+					<div class="card-body items-center text-center">
+						<h2 class="card-title">No connections yet</h2>
+						<p class="max-w-xl text-sm opacity-70">Connect a WhatsApp Business number to start sending campaigns. Each number you add appears here with its own token, quality rating and messaging limit.</p>
+						<span class="badge badge-outline">Milestone 3</span>
+					</div>
+				</div>
+			} else {
+				<div class="overflow-x-auto rounded-box bg-base-100 shadow-sm">
+					<table class="table">
+						<thead>
+							<tr>
+								<th>Number</th>
+								<th>Status</th>
+								<th>Quality</th>
+								<th>Daily limit</th>
+								<th>Token expires</th>
+								<th></th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, c := range v.Rows {
+								@ConnectionRow(c)
+							}
+						</tbody>
+					</table>
+				</div>
+				<p class="text-xs opacity-60">Numbers are shown in full here because they belong to your own account. Logs and error pages mask them.</p>
+			}
 		</div>
 	}
+}
+
+// ConnectionRow is one connection. It is also the HTMX swap target for
+// disconnect, so the same markup serves the initial render and the update.
+templ ConnectionRow(c ConnectionView) {
+	<tr id={ "connection-" + c.ID }>
+		<td>
+			<div class="font-medium">{ c.DisplayName }</div>
+			<div class="text-xs opacity-60">{ c.PhoneNumberOrPlaceholder() }</div>
+			<div class="text-xs opacity-50">{ c.AccountID }</div>
+		</td>
+		<td><span class={ "badge", c.StatusKind }>{ c.StatusLabel }</span></td>
+		<td>{ c.QualityRating }</td>
+		<td>{ fmt.Sprintf("%d", c.MessagingLimit) }</td>
+		<td><span class={ c.TokenClass() }>{ c.TokenExpires }</span></td>
+		<td class="text-right">
+			if c.Status == "disconnected" || c.TokenState == "expired" {
+				<span class="text-xs opacity-60">Use Connect WhatsApp to reconnect</span>
+			} else {
+				<button
+					type="button"
+					class="btn btn-ghost btn-sm text-error"
+					hx-post={ "/connections/" + c.ID + "/disconnect" }
+					hx-target={ "#connection-" + c.ID }
+					hx-swap="outerHTML"
+					data-confirm={ "Disconnect " + c.DisplayName + "? Campaigns using it will be paused." }
+				>
+					Disconnect
+				</button>
+			}
+		</td>
+	</tr>
 }
 
 // MilestonePlaceholder keeps unbuilt features honest instead of showing a dead

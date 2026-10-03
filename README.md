@@ -10,11 +10,12 @@ and [River](https://riverqueue.com) for the job queue.
 
 ## Status
 
-Milestones 1 and 2 of the roadmap in [PROMPT.md](PROMPT.md) are implemented: the
+Milestones 1 to 3 of the roadmap in [PROMPT.md](PROMPT.md) are implemented: the
 app skeleton, PostgreSQL schema, email/password authentication, sessions, CSRF,
-rate limiting, the base UI, the worker entrypoint, and Meta's webhook endpoint.
-Later milestones (Embedded Signup, templates, contacts, campaigns, analytics) are
-not built yet, and their navigation entries are deliberately disabled.
+rate limiting, the base UI, the worker entrypoint, Meta's webhook endpoint, and
+WhatsApp connections through Meta Embedded Signup. Later milestones (templates,
+contacts, campaigns, analytics) are not built yet, and their navigation entries
+are deliberately disabled.
 
 ## Requirements
 
@@ -65,17 +66,70 @@ cmd/server        web server entrypoint
 cmd/worker        River worker entrypoint
 cmd/migrate       migration runner (app SQL + River)
 internal/auth     registration, login, bcrypt, sessions
-internal/config   environment loading and validation
-internal/cryptox  AES-256-GCM encryption for access tokens
-internal/db       pool, query wrappers, sqlc output
-internal/httpx    CSRF, rate limiting, logging, JSON and error responses
-internal/jobs     River client and worker wiring
-internal/phone    E.164 validation and masking
-internal/web      templ components and page views
-internal/webhooks Meta webhook signature, challenge, and event handlers
+internal/config     environment loading and validation
+internal/connections Embedded Signup flow, connections service and handlers
+internal/cryptox    AES-256-GCM encryption for access tokens
+internal/db         pool, query wrappers, sqlc output
+internal/httpx      CSRF, rate limiting, logging, JSON and error responses
+internal/jobs       River client and worker wiring
+internal/phone      E.164 normalisation, validation and masking
+internal/web        templ components and page views
+internal/webhooks   Meta webhook signature, challenge, and event handlers
+internal/whatsapp   Cloud API client: code exchange, accounts, phone numbers
 migrations        paired up/down SQL migrations
 static            CSS, vendored htmx and Alpine
 ```
+
+## Connecting a WhatsApp number
+
+`/connections` runs Meta's **Classic Embedded Signup v4** through the Facebook
+Login JavaScript SDK. The browser loads the SDK on demand, asks the server for a
+one-shot state value, opens the dialog, and posts the returned authorization
+code back to the server, which completes the exchange.
+
+Setting it up requires four things:
+
+| Where | What |
+| --- | --- |
+| App settings > Basic | `META_APP_ID` and `META_APP_SECRET` |
+| WhatsApp > Embedded Signup | `META_FB_CONFIG_ID`, the configuration id passed to the SDK |
+| Facebook Login > Settings | The exact redirect URI below, as a valid OAuth redirect URI |
+| App settings > Basic > App domains | The bare host of `PUBLIC_BASE_URL` |
+
+The redirect URI is derived, not configured separately, so it cannot drift from
+the deployment:
+
+```sh
+PUBLIC_BASE_URL=https://wasatn.onrender.com   # → https://wasatn.onrender.com/connections
+```
+
+If any of these is missing the Connect button is not rendered and the startup log
+says which variable is empty. Never paste `META_APP_SECRET` into a chat or a
+ticket: set it as an environment secret where the app is hosted.
+
+The server then exchanges the code for a short-lived token, trades that for a
+**customer-scoped long-lived token** (about 60 days), lists the WhatsApp Business
+Accounts it reaches, subscribes the app to each account's webhooks, and stores one
+connection per phone number.
+
+A few consequences of that token choice, which differ from `PROMPT.md`:
+
+- Every tenant stores its own token, encrypted with AES-256-GCM. Nothing is
+  shared between tenants, and there is no System User token.
+- The token expires. WasaTN does not refresh it: `/connections` warns a week
+  ahead, shows the expiry date, and the customer reconnects from the same button.
+  A connection whose token has run out is not used to send.
+- A number already connected to a different WasaTN account is refused with a 409
+  rather than silently reassigned, because a WhatsApp number has exactly one owner.
+- Embedded Signup v4 lets a business finish without a verified number. Such an
+  account is stored as `pending_phone`: visible, but not ready to send from. When
+  a number appears later, the placeholder is replaced by a row for that number.
+- One WhatsApp Business Account can own several numbers, and all of them are
+  connected by the same signup as separate connections.
+
+Sending real customers also requires Meta Business Verification and Advanced
+Access for the WhatsApp product. In Development mode only app roles and testers
+can complete the dialog.
 
 ## Meta webhooks
 
@@ -122,7 +176,10 @@ make migrate-version                         # show applied versions
 ```
 
 `migrations/0001_init.up.sql` holds the whole MVP schema: users, connections,
-contacts, templates, campaigns, message logs, and audit logs.
+contacts, templates, campaigns, message logs, and audit logs. `0003` made a
+connection's phone number nullable for Embedded Signup v4, and `0004` made the
+phone number the identity of a connection, so one WhatsApp Business Account can
+own several connected numbers.
 
 ## Development
 
@@ -168,7 +225,8 @@ Steps:
 1. Push the repo to GitHub.
 2. In Render choose **New > Blueprint**, select the repo, and apply.
 3. Render shows the fields from `render.yaml`. Give it the Neon connection
-   string for `DATABASE_URL`, and leave the Meta fields empty until milestone 2.
+   string for `DATABASE_URL`, and fill in the Meta fields below if you want
+   customers to connect their own numbers.
 4. Deploy, then check `curl https://<your-url>/healthz`. It must return
    `{"status":"ok","database":"up"}`.
 
@@ -185,7 +243,8 @@ work without editing it by hand.
 | `TRUST_PROXY` | blueprint | Must be `true`: Render terminates TLS and sets `X-Forwarded-Proto` and `X-Forwarded-For`. |
 | `PUBLIC_BASE_URL` | blueprint | Derived from the service host; a bare hostname is upgraded to https. |
 | `PORT` | Render | Injected by the platform and bound when `HTTP_ADDR` is unset. |
-| `META_APP_ID`, `META_APP_SECRET`, `META_VERIFY_TOKEN` | no | Empty until milestone 2. The app boots and logs a warning, and the connections page shows a setup notice. |
+| `META_APP_ID`, `META_APP_SECRET`, `META_VERIFY_TOKEN` | no | Without them the app boots and logs a warning, webhooks reject every delivery, and the connections page shows a setup notice. |
+| `META_FB_CONFIG_ID` | no | Embedded Signup configuration id. Public, not a secret, but without it the Connect button is never rendered. |
 
 Migrations are **not** run by Render, because the free plan has no pre-deploy
 command. Run them from your machine whenever the schema changes:

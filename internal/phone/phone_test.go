@@ -1,6 +1,7 @@
 package phone
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -85,5 +86,71 @@ func TestMaskNeverLeaksMoreThanFourDigits(t *testing.T) {
 	}
 	if !strings.HasSuffix(masked, "4567") {
 		t.Errorf("Mask(%q) = %q, want the last four digits visible", secret, masked)
+	}
+}
+
+func TestNormalize(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "already E.164", in: "+15550109999", want: "+15550109999"},
+		{name: "spaces", in: "+1 555 010 9999", want: "+15550109999"},
+		{name: "dashes and parens", in: "+1 (555) 010-9999", want: "+15550109999"},
+		{name: "missing plus is restored", in: "1 555 010 9999", want: "+15550109999"},
+		{name: "leading and trailing space", in: "  +15550109999  ", want: "+15550109999"},
+		{name: "international with spaces", in: "+44 20 7946 0958", want: "+442079460958"},
+		{name: "empty", in: "", want: ""},
+		{name: "no digits at all", in: "not a number", want: ""},
+		// A '+' in the middle is just another separator to drop; the result is
+		// still a well-formed number rather than a string needing repair.
+		{name: "a plus in the middle is dropped", in: "1555+0109999", want: "+15550109999"},
+		{name: "a number the country code cannot be trusted for", in: "(555) 010-9999", want: "+5550109999"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Normalize(tc.in); got != tc.want {
+				t.Fatalf("Normalize(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeE164(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{name: "valid formatted number", in: "+1 555 010 9999", want: "+15550109999"},
+		{name: "too short", in: "+12345", wantErr: true},
+		{name: "empty", in: "", wantErr: true},
+		{name: "no digits", in: "+", wantErr: true},
+		// A leading zero country digit is not valid E.164.
+		{name: "leading zero", in: "+05550109999", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := NormalizeE164(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("NormalizeE164(%q) = %q, want an error", tc.in, got)
+				}
+				if !errors.Is(err, ErrNotE164) {
+					t.Fatalf("error = %v, want ErrNotE164", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NormalizeE164(%q): %v", tc.in, err)
+			}
+			if got != tc.want {
+				t.Fatalf("NormalizeE164(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
 	}
 }

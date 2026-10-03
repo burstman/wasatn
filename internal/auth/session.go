@@ -156,6 +156,27 @@ func (s *Session) Flash(r *http.Request, kind, message string) {
 	s.manager.Put(r.Context(), "flash_message", message)
 }
 
+// flowKeyPrefix namespaces the short-lived values below, so they cannot collide
+// with the session's own keys.
+const flowKeyPrefix = "flow:"
+
+// PutFlowValue stores a short-lived value tied to the session.
+//
+// Multi-step flows that leave the app and come back need somewhere to keep a
+// value across the round trip: Embedded Signup sends the browser to Facebook and
+// returns to a callback, and the state that proves the return is legitimate has
+// to survive in the server-side session rather than in a query parameter a
+// visitor could edit.
+func (s *Session) PutFlowValue(r *http.Request, key, value string) {
+	s.manager.Put(r.Context(), flowKeyPrefix+key, value)
+}
+
+// TakeFlowValue returns a value set by PutFlowValue and clears it, so a single
+// value cannot be replayed.
+func (s *Session) TakeFlowValue(r *http.Request, key string) string {
+	return popString(s.manager, r.Context(), flowKeyPrefix+key)
+}
+
 // TakeFlash returns and clears the pending flash message.
 func (s *Session) TakeFlash(r *http.Request) (kind, message string) {
 	ctx := r.Context()

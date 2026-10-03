@@ -64,6 +64,71 @@ type EmptyView struct {
 	Milestone   string
 }
 
+// SignupView carries the Facebook Login configuration the browser needs to open
+// the Embedded Signup dialog.
+//
+// None of these are secrets. The app id and config id are public identifiers
+// that Meta expects the browser to have, the version selects the Graph API, and
+// the redirect URI must match the app's registered OAuth redirect URI exactly.
+type SignupView struct {
+	AppID       string
+	ConfigID    string
+	Version     string
+	RedirectURI string
+	// Enabled is false when the app is missing Meta configuration, so the page
+	// can explain the problem instead of loading the SDK for a dialog that
+	// cannot open.
+	Enabled bool
+}
+
+// ConnectionsView is the connections page: the signup controls and the rows.
+type ConnectionsView struct {
+	Signup SignupView
+	Rows   []ConnectionView
+}
+
+// ConnectionView is one row on the connections page.
+type ConnectionView struct {
+	ID          string
+	AccountID   string
+	PhoneNumber string
+	DisplayName string
+	// Status is the raw connection_status value. The page compares it directly
+	// to decide whether a disconnect button makes sense.
+	Status string
+	// StatusLabel and StatusKind turn the status into a readable badge.
+	StatusLabel    string
+	StatusKind     string
+	QualityRating  string
+	MessagingLimit int
+	// TokenExpires is formatted for display, never a raw timestamp.
+	TokenExpires string
+	// TokenState is one of "ok", "expiring" or "expired".
+	TokenState string
+}
+
+// PhoneNumberOrPlaceholder renders the number, or a note that onboarding has not
+// produced one yet.
+func (c ConnectionView) PhoneNumberOrPlaceholder() string {
+	if c.PhoneNumber == "" {
+		return "Waiting for a phone number"
+	}
+	return c.PhoneNumber
+}
+
+// TokenClass styles the expiry cell, so an expiring or expired token is not
+// something a customer has to notice by reading a date.
+func (c ConnectionView) TokenClass() string {
+	switch c.TokenState {
+	case "ok":
+		return "text-sm opacity-70"
+	case "expired":
+		return "text-sm font-semibold text-error"
+	default:
+		return "text-sm font-medium text-warning"
+	}
+}
+
 // PageTitle composes the browser title.
 func (p PageData) PageTitle() string {
 	if p.Title == "" {

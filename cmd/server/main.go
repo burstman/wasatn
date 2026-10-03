@@ -34,9 +34,15 @@ func run() error {
 	if err := cfg.ValidateForProduction(); err != nil {
 		return err
 	}
-	if !cfg.Meta.MetaConfigured() {
-		log.Warn("meta is not configured, so connecting a WhatsApp number is disabled",
-			"hint", "set META_APP_ID and META_APP_SECRET",
+	if !cfg.Meta.SignupConfigured() {
+		// Split from the webhook warning below: the webhook can be fully working
+		// while signup is not, and an operator should not have to guess which
+		// half of Meta is missing.
+		log.Warn("embedded signup is disabled, so no WhatsApp number can be connected",
+			"app_id_set", cfg.Meta.AppID != "",
+			"app_secret_set", cfg.Meta.AppSecret != "",
+			"config_id_set", cfg.Meta.FBConfigID != "",
+			"hint", "set META_APP_ID, META_APP_SECRET and META_FB_CONFIG_ID",
 		)
 	}
 	// Separate warning because a missing app secret and a missing verify token

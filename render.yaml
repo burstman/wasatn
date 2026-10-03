@@ -2,7 +2,7 @@
 #
 # Deploy with: New > Blueprint, point it at this repo, then fill in the secret
 # values it asks for. Database migrations are NOT run automatically: the Neon
-# schema is already at version 2, so run `make migrate` locally when the
+# schema is already at version 4, so run `make migrate` locally when the
 # schema changes.
 #
 # Generated secrets on a POSIX machine:
@@ -36,7 +36,7 @@ services:
       - key: SESSION_COOKIE_NAME
         value: wasatn_session
       - key: META_GRAPH_VERSION
-        value: v21.0
+        value: v25.0 # Embedded Signup v4 is documented against this version
       - key: DATABASE_URL
         sync: false # Neon connection string
       - key: SESSION_SECRET
@@ -46,11 +46,13 @@ services:
       - key: CRON_SECRET
         generateValue: true
       - key: META_APP_ID
-        sync: false # until M2, leave empty: the app warns and disables signup
+        sync: false
       - key: META_APP_SECRET
         sync: false
       - key: META_VERIFY_TOKEN
         sync: false
+      - key: META_FB_CONFIG_ID
+        sync: false # Embedded Signup configuration id: public, not a secret
 
   # Uncomment when campaign jobs land (milestone 5). Render Background Workers
   # need a paid plan, so keep this commented while the queue is empty: the

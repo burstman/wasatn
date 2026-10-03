@@ -36,6 +36,11 @@ type MetaConfig struct {
 	AppID       string
 	AppSecret   string
 	VerifyToken string
+	// FBConfigID identifies the Embedded Signup configuration in the Facebook
+	// Login JS SDK. The browser needs it to open the signup dialog, and it is
+	// public by design, so it travels to the page rather than staying server
+	// side. It is a numeric id, not a secret.
+	FBConfigID string
 	// GraphVersion is the Cloud API version segment, e.g. "v25.0". Callers build
 	// URLs as https://graph.facebook.com/<GraphVersion>/...
 	GraphVersion string
@@ -53,10 +58,20 @@ type MetaConfig struct {
 // Raise it deliberately, then re-run the signup flow against the live API.
 const DefaultGraphVersion = "v25.0"
 
-// MetaConfigured reports whether Embedded Signup can be offered. Until it is,
-// the connections page shows a setup notice instead of a broken button.
+// MetaConfigured reports whether the Cloud API can be called at all. Until it
+// is, the app still boots: the webhook only needs AppSecret and VerifyToken,
+// and the connections page shows a setup notice instead of a broken button.
 func (m MetaConfig) MetaConfigured() bool {
 	return m.AppID != "" && m.AppSecret != ""
+}
+
+// SignupConfigured reports whether the Embedded Signup button can be rendered.
+//
+// It is stricter than MetaConfigured: Facebook Login also needs the signup
+// configuration id, so a half-configured app (secret present, config id missing)
+// would load the SDK and then fail only after the user clicks.
+func (m MetaConfig) SignupConfigured() bool {
+	return m.MetaConfigured() && m.FBConfigID != ""
 }
 
 // Version returns the configured Cloud API version in the form Meta expects,
@@ -145,6 +160,21 @@ type Config struct {
 // Production reports whether the app is running in production mode.
 func (c *Config) Production() bool { return c.Env == EnvProduction }
 
+// SignupRedirectURI is the OAuth redirect URI sent with the Facebook Login
+// authorization request.
+//
+// Meta requires an exact character-for-character match with a URI registered in
+// Facebook Login > Settings, so it is derived from PublicBaseURL rather than
+// assembled in a handler. The connections page is where the signup dialog lives,
+// which makes it the natural landing URL; add this exact value to the app's
+// redirect URI list before going live.
+func (c *Config) SignupRedirectURI() string {
+	if c.PublicBaseURL == "" {
+		return ""
+	}
+	return c.PublicBaseURL + "/connections"
+}
+
 // Load reads .env (if present) and then the process environment, and returns a
 // validated Config. It never calls os.Exit so it stays usable from tests.
 func Load() (*Config, error) {
@@ -184,6 +214,7 @@ func Load() (*Config, error) {
 			AppID:        os.Getenv("META_APP_ID"),
 			AppSecret:    os.Getenv("META_APP_SECRET"),
 			VerifyToken:  os.Getenv("META_VERIFY_TOKEN"),
+			FBConfigID:   os.Getenv("META_FB_CONFIG_ID"),
 			GraphVersion: getenv("META_GRAPH_VERSION", DefaultGraphVersion),
 		},
 		CronSecret:         os.Getenv("CRON_SECRET"),

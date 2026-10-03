@@ -14,12 +14,15 @@ import (
 	wasatn "github.com/burstman/wasatn"
 	"github.com/burstman/wasatn/internal/auth"
 	"github.com/burstman/wasatn/internal/config"
+	"github.com/burstman/wasatn/internal/connections"
+	"github.com/burstman/wasatn/internal/cryptox"
 	"github.com/burstman/wasatn/internal/db"
 	"github.com/burstman/wasatn/internal/db/sqlc"
 	"github.com/burstman/wasatn/internal/httpx"
 	"github.com/burstman/wasatn/internal/jobs"
 	"github.com/burstman/wasatn/internal/web"
 	"github.com/burstman/wasatn/internal/webhooks"
+	"github.com/burstman/wasatn/internal/whatsapp"
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -33,15 +36,16 @@ const (
 
 // App holds the dependencies shared by the HTTP handlers.
 type App struct {
-	Config   *config.Config
-	Log      *slog.Logger
-	Pool     *pgxpool.Pool
-	Queries  *sqlc.Queries
-	Session  *auth.Session
-	CSRF     *httpx.CSRF
-	Auth     *auth.Handlers
-	Jobs     *jobs.Client
-	Webhooks *webhooks.Handler
+	Config      *config.Config
+	Log         *slog.Logger
+	Pool        *pgxpool.Pool
+	Queries     *sqlc.Queries
+	Session     *auth.Session
+	CSRF        *httpx.CSRF
+	Auth        *auth.Handlers
+	Connections *connections.Handlers
+	Jobs        *jobs.Client
+	Webhooks    *webhooks.Handler
 
 	staticFS  http.FileSystem
 	authLimit *httpx.Limiter
@@ -67,12 +71,36 @@ func New(cfg *config.Config, log *slog.Logger, pool *pgxpool.Pool) (*App, error)
 	queries := db.NewQueries(pool)
 	service := auth.NewService(queries, auth.BcryptCost, log)
 
+	// Access tokens are encrypted at rest, so a database leak cannot be turned
+	// into a customer sending from their own number.
+	cipher, err := cryptox.NewCipher(cfg.TokenKey)
+	if err != nil {
+		return nil, err
+	}
+
+	// The Graph client is an interface field so an app without Meta credentials
+	// still boots: the webhook keeps serving and the connections page explains
+	// what is missing. Declaring the interface first, rather than holding a
+	// *whatsapp.Client that may be nil, keeps the "not configured" case a real
+	// nil check instead of a panic on first use.
+	var graph connections.Graph
+	if client, clientErr := whatsapp.NewClient(whatsapp.Config{
+		AppID:        cfg.Meta.AppID,
+		AppSecret:    cfg.Meta.AppSecret,
+		GraphVersion: cfg.Meta.Version(),
+	}); clientErr != nil {
+		// An unconfigured signup must not stop the webhook serving.
+		log.WarnContext(context.Background(), "embedded signup disabled", "err", clientErr.Error())
+	} else {
+		graph = client
+	}
+
 	jobClient, err := jobs.NewClient(pool, &cfg.River, nil, log.With("component", "river"))
 	if err != nil {
 		return nil, err
 	}
 
-	return &App{
+	app := &App{
 		Config:    cfg,
 		Log:       log,
 		Pool:      pool,
@@ -84,7 +112,20 @@ func New(cfg *config.Config, log *slog.Logger, pool *pgxpool.Pool) (*App, error)
 		Webhooks:  webhooks.New(queries, cfg.Meta.AppSecret, cfg.Meta.VerifyToken, log),
 		staticFS:  staticFS,
 		authLimit: httpx.NewLimiter(AuthRateLimitAttempts, AuthRateLimitWindow),
-	}, nil
+	}
+
+	// The service is built even when the Graph client is nil: listing and
+	// disconnecting connections still work, and Connect reports the missing
+	// configuration rather than panicking.
+	connectionService := connections.NewService(queries, graph, cipher, log.With("component", "connections"))
+	app.Connections = connections.NewHandlers(connectionService, session, connections.SignupConfig{
+		AppID:       cfg.Meta.AppID,
+		ConfigID:    cfg.Meta.FBConfigID,
+		Version:     cfg.Meta.Version(),
+		RedirectURI: cfg.SignupRedirectURI(),
+	}, app.pageData, log)
+
+	return app, nil
 }
 
 // Router builds the HTTP handler for the whole app.
@@ -118,7 +159,13 @@ func (a *App) Router() http.Handler {
 			http.Redirect(w, r, "/dashboard", http.StatusSeeOther)
 		})
 		r.Get("/dashboard", kit.Handler(a.dashboardPage))
-		r.Get("/connections", kit.Handler(a.connectionsPage))
+
+		r.Get("/connections", kit.Handler(a.Connections.Index))
+		// The state endpoint is a POST: it mutates the session, so a GET would
+		// let a third-party page prime it from a victim's browser.
+		r.Post("/connections/signup-state", kit.Handler(a.Connections.SignupState))
+		r.Post("/connections/callback", kit.Handler(a.Connections.Callback))
+		r.Post("/connections/{id}/disconnect", kit.Handler(a.Connections.Disconnect))
 	})
 
 	r.NotFound(kit.Handler(func(k *kit.Kit) error {
@@ -170,11 +217,10 @@ func (a *App) pageData(k *kit.Kit, title string) web.PageData {
 
 // dashboardPage renders the landing page.
 func (a *App) dashboardPage(k *kit.Kit) error {
-	// Connection and campaign counts arrive with those milestones.
-	return k.Render(web.DashboardPage(a.pageData(k, "Dashboard"), 0, 0))
-}
-
-// connectionsPage renders the connections list.
-func (a *App) connectionsPage(k *kit.Kit) error {
-	return k.Render(web.ConnectionsPage(a.pageData(k, "Connections"), a.Config.Meta.MetaConfigured()))
+	// Campaign counts arrive with that milestone.
+	count, err := a.Connections.Count(k.Request.Context(), a.Session.UserID(k.Request))
+	if err != nil {
+		return httpx.Internal(err)
+	}
+	return k.Render(web.DashboardPage(a.pageData(k, "Dashboard"), count, 0))
 }

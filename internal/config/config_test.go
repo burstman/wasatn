@@ -296,6 +296,64 @@ func TestMetaConfigured(t *testing.T) {
 	}
 }
 
+// Facebook Login needs the signup configuration id as well as the app id and
+// secret, so a half-configured app must report itself unconfigured rather than
+// rendering a button that fails after the click.
+func TestSignupConfigured(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		meta MetaConfig
+		want bool
+	}{
+		{name: "complete", meta: MetaConfig{AppID: "1", AppSecret: "s", FBConfigID: "1688820642776714"}, want: true},
+		{name: "no config id", meta: MetaConfig{AppID: "1", AppSecret: "s"}},
+		{name: "no secret", meta: MetaConfig{AppID: "1", FBConfigID: "c"}},
+		{name: "no app id", meta: MetaConfig{AppSecret: "s", FBConfigID: "c"}},
+		{name: "empty", meta: MetaConfig{}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := tc.meta.SignupConfigured(); got != tc.want {
+				t.Errorf("SignupConfigured() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Meta matches the redirect URI character for character, so it is derived in one
+// place rather than assembled in a handler.
+func TestSignupRedirectURI(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		base string
+		want string
+	}{
+		{name: "production", base: "https://wasatn.onrender.com", want: "https://wasatn.onrender.com/connections"},
+		{name: "local development", base: "http://localhost:8080", want: "http://localhost:8080/connections"},
+		// A base URL is validated to have no trailing slash, but deriving an
+		// empty string is safer than emitting "//connections" if one arrives.
+		{name: "unset", base: "", want: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := Config{PublicBaseURL: tc.base}
+			if got := cfg.SignupRedirectURI(); got != tc.want {
+				t.Errorf("SignupRedirectURI() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestGraphBaseURL(t *testing.T) {
 	t.Parallel()
 
@@ -424,6 +482,7 @@ func TestLoadSucceedsWithValidEnv(t *testing.T) {
 	t.Setenv("TRUST_PROXY", "true")
 	t.Setenv("META_APP_ID", "123456789")
 	t.Setenv("META_APP_SECRET", "meta-secret")
+	t.Setenv("META_FB_CONFIG_ID", "1688820642776714")
 
 	cfg, err := Load()
 	if err != nil {
@@ -443,6 +502,15 @@ func TestLoadSucceedsWithValidEnv(t *testing.T) {
 	}
 	if !cfg.Meta.MetaConfigured() {
 		t.Error("Meta.MetaConfigured() = false, want true; AppID and AppSecret must both be set")
+	}
+	if cfg.Meta.FBConfigID != "1688820642776714" {
+		t.Errorf("Meta.FBConfigID = %q", cfg.Meta.FBConfigID)
+	}
+	if !cfg.Meta.SignupConfigured() {
+		t.Error("Meta.SignupConfigured() = false, want true")
+	}
+	if got := cfg.SignupRedirectURI(); got != "http://localhost:8080/connections" {
+		t.Errorf("SignupRedirectURI() = %q", got)
 	}
 	if cfg.River.MaxWorkers <= 0 || len(cfg.River.Queues) == 0 {
 		t.Errorf("River defaults = %+v, want workers and queues", cfg.River)
